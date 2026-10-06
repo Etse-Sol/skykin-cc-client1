@@ -96,14 +96,18 @@ services:
       DB_NAME: ${DB_NAME:-fusionpbx}
       DB_USER: ${DB_USER:-fusionpbx}
       DB_PASSWORD: ${DB_PASSWORD:-fusionpbx}
-      ESL_HOST: ${ESL_HOST:-10.0.0.77}
+      # FreeSWITCH uses network_mode:host — reach it via the docker bridge gateway
+      # (usually 172.18.0.1), not a LAN IP from another server.
+      ESL_HOST: ${ESL_HOST:-172.18.0.1}
       ESL_PORT: ${ESL_PORT:-8021}
       ESL_PASSWORD: ${ESL_PASSWORD:-ClueCon}
       # FusionPBX SIP domain only — not the public hostname webcc.skyconnectsolutions.et
       SKYKIN_DOMAIN: ${SKYKIN_DOMAIN:-${FS_DOMAIN:-}}
       CDR_CRED: ${CDR_CRED:-fusionpbx:fusionpbx}
-      FREESWITCH_WS_UPSTREAM: ${FREESWITCH_WS_UPSTREAM:-10.0.0.77:18081}
-      FREESWITCH_WS_SCHEME: ${FREESWITCH_WS_SCHEME:-http}
+      FREESWITCH_WS_UPSTREAM: ${FREESWITCH_WS_UPSTREAM:-172.18.0.1:7443}
+      FREESWITCH_WS_SCHEME: ${FREESWITCH_WS_SCHEME:-https}
+      # Empty disables Ahununu.com tab on client1 clones
+      SKYKIN_AHUNUNU_URL: ${SKYKIN_AHUNUNU_URL:-}
       SERVER_NAME: ${TLS_CN:-skykin.local}
       TLS_CN: ${TLS_CN:-skykin.local}
       TLS_SAN_IP: ${TLS_SAN_IP:-}

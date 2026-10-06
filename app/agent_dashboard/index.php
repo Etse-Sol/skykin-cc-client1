@@ -2853,7 +2853,9 @@ body.phone-open .footer { margin-right: 300px; transition: margin-right 0.3s eas
         <button class="sb-item"        id="sbCrmBtn"         onclick="sidebarNav('crm')">CRM</button>
         <button class="sb-item"        id="sbCallbacksBtn"   onclick="sidebarNav('callbacks')">Callbacks</button>
         <button class="sb-item"        id="sbBlacklistBtn"   onclick="sidebarNav('blacklist')">Blacklist</button>
+        <?php if (!empty(skykin_config()['ahununu_url'])): ?>
         <button class="sb-item"        id="sbAhununuBtn"     onclick="sidebarNav('ahununu')">Ahununu.com</button>
+        <?php endif; ?>
 
         <?php if ($is_supervisor): ?>
         <div class="sb-divider"></div>
@@ -2886,7 +2888,9 @@ body.phone-open .footer { margin-right: 300px; transition: margin-right 0.3s eas
             <button class="tab-btn" id="tabCrmBtn" onclick="switchTab('crm')">CRM</button>
             <button class="tab-btn" id="tabCallbacksBtn" onclick="switchTab('callbacks')">Callbacks</button>
             <button class="tab-btn" id="tabBlacklistBtn" onclick="switchTab('blacklist')">Blacklist</button>
+            <?php if (!empty(skykin_config()['ahununu_url'])): ?>
             <button class="tab-btn" id="tabAhununuBtn" onclick="switchTab('ahununu')">&#127760; Ahununu.com</button>
+            <?php endif; ?>
         </div>
 
         <!-- ?? Dashboard Tab (landing overview) ?? -->
