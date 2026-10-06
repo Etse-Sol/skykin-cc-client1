@@ -1391,7 +1391,7 @@ if [ -n "$FS_INBOUND_DID_REGEX" ] && [ -n "$FS_DOMAIN" ]; then
       <action application="set" data="cc_export_vars=execute_on_hangup"/>
       <action application="lua" data="/etc/freeswitch/scripts/skykin_bl_gate.lua"/>
     </condition>
-    <condition field="${skykin_blocked}" expression="^true$" break="on-true">
+    <condition field="\${skykin_blocked}" expression="^true$" break="on-true">
       <action application="hangup" data="CALL_REJECTED"/>
     </condition>
     <condition>
@@ -1437,7 +1437,7 @@ if [ -n "$FS_DOMAIN2" ] && [ -n "$FS_INBOUND_DID2_REGEX" ]; then
       <action application="set" data="cc_export_vars=execute_on_hangup"/>
       <action application="lua" data="/etc/freeswitch/scripts/skykin_bl_gate.lua"/>
     </condition>
-    <condition field="${skykin_blocked}" expression="^true$" break="on-true">
+    <condition field="\${skykin_blocked}" expression="^true$" break="on-true">
       <action application="hangup" data="CALL_REJECTED"/>
     </condition>
     <condition>
