@@ -1,0 +1,599 @@
+@import "tailwindcss";
+
+@theme {
+  /* Brand palette sampled from the SkyKin logo: #0080D0 mark, #082038 wordmark.
+     These stay constant across every theme — the logo colour is the anchor. */
+  --color-brand-50: #e8f5fe;
+  --color-brand-100: #c9e8fc;
+  --color-brand-200: #99d3f8;
+  --color-brand-300: #63bcf3;
+  --color-brand-400: #2fa1e6;
+  --color-brand-500: #0080d0;
+  --color-brand-600: #0068ab;
+  --color-brand-700: #005187;
+  --color-brand-800: #003a61;
+  --color-brand-900: #00263f;
+
+  --color-navy-400: #1d5a8e;
+  --color-navy-500: #16456e;
+  --color-navy-600: #103859;
+  --color-navy-700: #0b2a44;
+  --color-navy-800: #082038;
+  --color-navy-900: #061726;
+  --color-navy-950: #030c16;
+
+  --color-ink: #02080f;
+
+  --color-mist-100: #eef4fa;
+  --color-mist-200: #d6e2ee;
+  --color-mist-300: #b0c2d6;
+  --color-mist-400: #8497af;
+  --color-mist-500: #61748d;
+
+  --font-display: var(--font-display), ui-sans-serif, system-ui, sans-serif;
+  --font-sans: var(--font-body), ui-sans-serif, system-ui, sans-serif;
+
+  --animate-marquee: marquee 48s linear infinite;
+  --animate-marquee-slow: marquee 90s linear infinite;
+  --animate-float: float 9s ease-in-out infinite;
+  --animate-drift: drift 22s ease-in-out infinite;
+  --animate-pulse-ring: pulse-ring 3.4s ease-out infinite;
+  --animate-shimmer: shimmer 2.8s linear infinite;
+  --animate-bar: bar 2.6s ease-in-out infinite;
+}
+
+/* ---------------------------------------------------------------------------
+   Theme surfaces. Every themed value lives here so a palette swap is a matter
+   of overriding variables rather than touching components.
+   --------------------------------------------------------------------------- */
+
+/* 1. Midnight — near-black, cool blue glow. The original. */
+:root,
+[data-theme="midnight"] {
+  --color-ink: #02080f;
+  --color-navy-950: #030c16;
+  --heading: #ffffff;
+  --page-wash: radial-gradient(
+    120% 80% at 50% -10%,
+    rgba(0, 128, 208, 0.12),
+    transparent 60%
+  );
+  --glass-from: rgba(255, 255, 255, 0.07);
+  --glass-to: rgba(255, 255, 255, 0.015);
+  --glass-border: rgba(255, 255, 255, 0.09);
+  --glass-shadow: none;
+  --soft-bg: rgba(255, 255, 255, 0.035);
+  --soft-border: rgba(255, 255, 255, 0.07);
+  --grid-line: rgba(255, 255, 255, 0.045);
+  --hairline-color: rgba(255, 255, 255, 0.14);
+  --orb-opacity: 1;
+  --grad-1: #ffffff;
+  --grad-2: #99d3f8;
+  --grad-3: #0080d0;
+  --gradb-1: #63bcf3;
+  --gradb-2: #0080d0;
+  --lift-border: rgba(0, 128, 208, 0.5);
+  --lift-shadow: 0 32px 70px -34px rgba(0, 128, 208, 0.75);
+  --scroll-thumb: #123249;
+}
+
+/* 2. Aurora — deep indigo-black with a vivid blue / violet / cyan mesh.
+   The boldest, most "product launch" option. Blue stays on the CTAs. */
+[data-theme="aurora"] {
+  --color-ink: #070a1c;
+  --color-navy-950: #05071a;
+  --color-mist-300: #c3cdf0;
+  --color-mist-400: #8f9cc8;
+  --heading: #ffffff;
+  --page-wash:
+    radial-gradient(
+      90% 60% at 8% -8%,
+      rgba(0, 128, 208, 0.32),
+      transparent 55%
+    ),
+    radial-gradient(
+      80% 55% at 100% 4%,
+      rgba(124, 77, 255, 0.28),
+      transparent 55%
+    ),
+    radial-gradient(
+      90% 70% at 50% 108%,
+      rgba(0, 209, 214, 0.2),
+      transparent 60%
+    );
+  --glass-from: rgba(150, 130, 255, 0.1);
+  --glass-to: rgba(90, 140, 255, 0.025);
+  --glass-border: rgba(160, 150, 255, 0.18);
+  --soft-bg: rgba(130, 130, 255, 0.06);
+  --soft-border: rgba(160, 150, 255, 0.13);
+  --grid-line: rgba(150, 160, 255, 0.06);
+  --hairline-color: rgba(170, 170, 255, 0.24);
+  --orb-opacity: 1.5;
+  --grad-1: #ffffff;
+  --grad-2: #a9c5ff;
+  --grad-3: #7c4dff;
+  --gradb-1: #63bcf3;
+  --gradb-2: #7c4dff;
+  --lift-border: rgba(124, 77, 255, 0.55);
+  --lift-shadow: 0 34px 78px -32px rgba(124, 77, 255, 0.85);
+  --scroll-thumb: #2a2f6b;
+}
+
+/* 3. Paper — warm ivory light surface, navy ink, blue accents. */
+[data-theme="paper"] {
+  --color-ink: #f7f2e9;
+  --color-white: #2b2a25;
+  --color-mist-100: #2b2a25;
+  --color-mist-200: #423f38;
+  --color-mist-300: #5c5850;
+  --color-mist-400: #736e64;
+  --color-mist-500: #938d80;
+  --color-brand-200: #005187;
+  --color-brand-300: #0068ab;
+  --color-navy-950: #1c2a1f;
+  --heading: #1a2b22;
+  --page-wash: radial-gradient(
+    120% 80% at 50% -10%,
+    rgba(0, 128, 208, 0.08),
+    transparent 55%
+  );
+  --glass-from: rgba(255, 253, 248, 0.96);
+  --glass-to: rgba(250, 245, 236, 0.7);
+  --glass-border: rgba(43, 42, 37, 0.1);
+  --glass-shadow: 0 22px 46px -30px rgba(43, 42, 37, 0.34);
+  --soft-bg: rgba(43, 42, 37, 0.04);
+  --soft-border: rgba(43, 42, 37, 0.09);
+  --grid-line: rgba(43, 42, 37, 0.05);
+  --hairline-color: rgba(43, 42, 37, 0.14);
+  --orb-opacity: 0.35;
+  --grad-1: #1a2b22;
+  --grad-2: #0f6f8c;
+  --grad-3: #0080d0;
+  --gradb-1: #0068ab;
+  --gradb-2: #0080d0;
+  --lift-border: rgba(0, 128, 208, 0.5);
+  --lift-shadow: 0 28px 56px -34px rgba(43, 42, 37, 0.4);
+  --scroll-track: #efe8db;
+  --scroll-thumb: #d5cbb8;
+}
+
+/* 4. Slate — cool neutral grey light surface, corporate and calm. */
+[data-theme="slate"] {
+  --color-ink: #eceff3;
+  --color-white: #10151b;
+  --color-mist-100: #10151b;
+  --color-mist-200: #283039;
+  --color-mist-300: #48515c;
+  --color-mist-400: #626b77;
+  --color-mist-500: #8994a1;
+  --color-brand-200: #005187;
+  --color-brand-300: #0068ab;
+  --color-navy-950: #0d1b2a;
+  --heading: #0d1b2a;
+  --page-wash: radial-gradient(
+    120% 80% at 50% -10%,
+    rgba(0, 128, 208, 0.1),
+    transparent 55%
+  );
+  --glass-from: rgba(255, 255, 255, 0.9);
+  --glass-to: rgba(255, 255, 255, 0.64);
+  --glass-border: rgba(16, 21, 27, 0.1);
+  --glass-shadow: 0 20px 44px -30px rgba(16, 21, 27, 0.34);
+  --soft-bg: rgba(16, 21, 27, 0.04);
+  --soft-border: rgba(16, 21, 27, 0.09);
+  --grid-line: rgba(16, 21, 27, 0.05);
+  --hairline-color: rgba(16, 21, 27, 0.13);
+  --orb-opacity: 0.42;
+  --grad-1: #0d1b2a;
+  --grad-2: #0f5f9c;
+  --grad-3: #0080d0;
+  --gradb-1: #0068ab;
+  --gradb-2: #0080d0;
+  --lift-border: rgba(0, 128, 208, 0.5);
+  --lift-shadow: 0 28px 56px -34px rgba(16, 21, 27, 0.3);
+  --scroll-track: #dfe4ea;
+  --scroll-thumb: #bcc5cf;
+}
+
+/* Emerald — dark teal-green ambient paired with blue CTAs. */
+[data-theme="emerald"] {
+  --color-ink: #04140f;
+  --color-navy-950: #03110c;
+  --color-mist-300: #bcd8ce;
+  --color-mist-400: #8bab9f;
+  --heading: #ffffff;
+  --page-wash:
+    radial-gradient(
+      90% 60% at 12% -8%,
+      rgba(16, 185, 129, 0.24),
+      transparent 55%
+    ),
+    radial-gradient(
+      80% 55% at 100% 6%,
+      rgba(0, 128, 208, 0.2),
+      transparent 55%
+    );
+  --glass-from: rgba(120, 230, 190, 0.09);
+  --glass-to: rgba(120, 230, 190, 0.02);
+  --glass-border: rgba(120, 230, 190, 0.16);
+  --soft-bg: rgba(120, 230, 190, 0.05);
+  --soft-border: rgba(120, 230, 190, 0.11);
+  --grid-line: rgba(120, 230, 190, 0.05);
+  --hairline-color: rgba(120, 230, 190, 0.2);
+  --orb-opacity: 1.2;
+  --grad-1: #ffffff;
+  --grad-2: #7fe6c0;
+  --grad-3: #10b981;
+  --gradb-1: #34d3a6;
+  --gradb-2: #10b981;
+  --lift-border: rgba(16, 185, 129, 0.5);
+  --lift-shadow: 0 34px 74px -34px rgba(16, 185, 129, 0.75);
+  --scroll-thumb: #14503c;
+}
+
+/* Mono — high-contrast neutral black & white, blue only on actions. */
+[data-theme="mono"] {
+  --color-ink: #000000;
+  --color-navy-950: #000000;
+  --color-mist-300: #d4d4d4;
+  --color-mist-400: #9a9a9a;
+  --color-mist-500: #6f6f6f;
+  --heading: #ffffff;
+  --page-wash: none;
+  --glass-from: rgba(255, 255, 255, 0.08);
+  --glass-to: rgba(255, 255, 255, 0.02);
+  --glass-border: rgba(255, 255, 255, 0.16);
+  --soft-bg: rgba(255, 255, 255, 0.04);
+  --soft-border: rgba(255, 255, 255, 0.1);
+  --grid-line: rgba(255, 255, 255, 0.05);
+  --hairline-color: rgba(255, 255, 255, 0.2);
+  --orb-opacity: 0.25;
+  --grad-1: #ffffff;
+  --grad-2: #cfcfcf;
+  --grad-3: #8f8f8f;
+  --gradb-1: #ffffff;
+  --gradb-2: #b0b0b0;
+  --lift-border: rgba(255, 255, 255, 0.4);
+  --lift-shadow: 0 32px 70px -34px rgba(0, 0, 0, 1);
+  --scroll-thumb: #2a2a2a;
+}
+
+/* 5. Cool Mist — desaturated slate grey, silver surfaces, muted glow. */
+[data-theme="mist"] {
+  --color-ink: #151c24;
+  --color-navy-950: #10161d;
+  --color-navy-500: #3a4a5a;
+  --color-mist-300: #c3ccd6;
+  --color-mist-400: #93a0ad;
+  --color-mist-500: #6d7a87;
+  --heading: #f4f7fa;
+  --page-wash: radial-gradient(
+    120% 80% at 50% -10%,
+    rgba(0, 128, 208, 0.08),
+    transparent 58%
+  );
+  --glass-from: rgba(198, 210, 224, 0.1);
+  --glass-to: rgba(198, 210, 224, 0.025);
+  --glass-border: rgba(198, 210, 224, 0.16);
+  --soft-bg: rgba(198, 210, 224, 0.055);
+  --soft-border: rgba(198, 210, 224, 0.11);
+  --grid-line: rgba(198, 210, 224, 0.045);
+  --hairline-color: rgba(198, 210, 224, 0.18);
+  --orb-opacity: 0.4;
+  --grad-1: #eef2f6;
+  --grad-2: #a7bccf;
+  --grad-3: #2fa1e6;
+  --lift-border: rgba(198, 210, 224, 0.4);
+  --lift-shadow: 0 30px 62px -34px rgba(21, 28, 36, 1);
+  --scroll-thumb: #2c3947;
+}
+
+[data-theme="light"] {
+  --color-ink: #f5f9fd;
+  /* Flipping --color-white turns every text-white / bg-white utility into a
+     navy tint, which is what a light surface needs. */
+  --color-white: #0b2136;
+  --color-mist-100: #0b2136;
+  --color-mist-200: #22374e;
+  --color-mist-300: #44596f;
+  --color-mist-400: #5c7086;
+  --color-mist-500: #7b8ea4;
+  --color-brand-200: #005187;
+  --color-brand-300: #0068ab;
+  --color-navy-950: #061726;
+  --heading: #082038;
+  --page-wash: radial-gradient(
+    120% 80% at 50% -10%,
+    rgba(0, 128, 208, 0.1),
+    transparent 55%
+  );
+  --glass-from: rgba(255, 255, 255, 0.95);
+  --glass-to: rgba(255, 255, 255, 0.72);
+  --glass-border: rgba(8, 32, 56, 0.1);
+  --glass-shadow: 0 20px 44px -30px rgba(8, 32, 56, 0.4);
+  --soft-bg: rgba(8, 32, 56, 0.035);
+  --soft-border: rgba(8, 32, 56, 0.09);
+  --grid-line: rgba(8, 32, 56, 0.05);
+  --hairline-color: rgba(8, 32, 56, 0.14);
+  --orb-opacity: 0.4;
+  --grad-1: #082038;
+  --grad-2: #0f5f9c;
+  --grad-3: #0080d0;
+  --gradb-1: #0068ab;
+  --gradb-2: #0080d0;
+  --lift-border: rgba(0, 128, 208, 0.5);
+  --lift-shadow: 0 30px 60px -34px rgba(0, 128, 208, 0.55);
+  --scroll-track: #eaf1f8;
+  --scroll-thumb: #c3d3e2;
+}
+
+/* Islands that must stay dark regardless of the active theme, such as the
+   product console shown on a light page. */
+[data-surface="dark"] {
+  --color-white: #ffffff;
+  --color-mist-100: #eef4fa;
+  --color-mist-200: #d6e2ee;
+  --color-mist-300: #b0c2d6;
+  --color-mist-400: #8497af;
+  --color-mist-500: #61748d;
+  --color-navy-950: #030c16;
+  --heading: #ffffff;
+  --glass-from: rgba(255, 255, 255, 0.07);
+  --glass-to: rgba(255, 255, 255, 0.015);
+  --glass-border: rgba(255, 255, 255, 0.09);
+  --glass-shadow: none;
+  --soft-bg: rgba(255, 255, 255, 0.035);
+  --soft-border: rgba(255, 255, 255, 0.07);
+}
+
+@keyframes marquee {
+  from {
+    transform: translate3d(0, 0, 0);
+  }
+  to {
+    transform: translate3d(-50%, 0, 0);
+  }
+}
+
+@keyframes float {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-14px);
+  }
+}
+
+@keyframes drift {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  33% {
+    transform: translate3d(3%, -4%, 0) scale(1.06);
+  }
+  66% {
+    transform: translate3d(-3%, 3%, 0) scale(0.96);
+  }
+}
+
+@keyframes pulse-ring {
+  0% {
+    transform: scale(0.85);
+    opacity: 0.7;
+  }
+  100% {
+    transform: scale(1.6);
+    opacity: 0;
+  }
+}
+
+@keyframes shimmer {
+  from {
+    transform: translateX(-120%);
+  }
+  to {
+    transform: translateX(320%);
+  }
+}
+
+@keyframes bar {
+  0%,
+  100% {
+    transform: scaleY(0.35);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+}
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    background-color: var(--color-ink);
+    background-image: var(--page-wash, none);
+    background-attachment: fixed;
+    color: var(--color-mist-300);
+    font-family: var(--font-sans);
+    overflow-x: hidden;
+    transition:
+      background-color 0.4s ease,
+      color 0.4s ease;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4,
+  h5 {
+    font-family: var(--font-display);
+    color: var(--heading);
+    letter-spacing: -0.025em;
+    text-wrap: balance;
+  }
+
+  ::selection {
+    background: var(--color-brand-500);
+    color: #fff;
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: var(--scroll-track, var(--color-ink));
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: var(--scroll-thumb);
+    border-radius: 999px;
+    border: 2px solid var(--scroll-track, var(--color-ink));
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--color-brand-700);
+  }
+}
+
+@layer components {
+  .shell {
+    width: 100%;
+    margin-inline: auto;
+    max-width: 84rem;
+    padding-inline: 1.25rem;
+  }
+
+  @media (min-width: 1024px) {
+    .shell {
+      padding-inline: 2rem;
+    }
+  }
+
+  .glass {
+    background: linear-gradient(170deg, var(--glass-from), var(--glass-to));
+    border: 1px solid var(--glass-border);
+    box-shadow: var(--glass-shadow);
+    backdrop-filter: blur(16px);
+  }
+
+  .glass-soft {
+    background: var(--soft-bg);
+    border: 1px solid var(--soft-border);
+  }
+
+  .lift {
+    transition:
+      transform 0.45s cubic-bezier(0.22, 1, 0.36, 1),
+      border-color 0.35s ease,
+      box-shadow 0.45s ease,
+      background-color 0.35s ease;
+  }
+
+  .lift:hover {
+    transform: translateY(-6px);
+    border-color: var(--lift-border);
+    box-shadow: var(--lift-shadow);
+  }
+
+  .text-gradient {
+    background: linear-gradient(
+      100deg,
+      var(--grad-1) 0%,
+      var(--grad-2) 42%,
+      var(--grad-3) 100%
+    );
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+
+  .text-gradient-brand {
+    background: linear-gradient(100deg, var(--gradb-1) 0%, var(--gradb-2) 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+
+  .hairline {
+    background: linear-gradient(
+      90deg,
+      transparent,
+      var(--hairline-color),
+      transparent
+    );
+    height: 1px;
+    width: 100%;
+  }
+
+  .grid-lines {
+    background-image:
+      linear-gradient(var(--grid-line) 1px, transparent 1px),
+      linear-gradient(90deg, var(--grid-line) 1px, transparent 1px);
+    background-size: 64px 64px;
+  }
+
+  .mask-fade-x {
+    -webkit-mask-image: linear-gradient(
+      90deg,
+      transparent,
+      #000 7%,
+      #000 93%,
+      transparent
+    );
+    mask-image: linear-gradient(
+      90deg,
+      transparent,
+      #000 7%,
+      #000 93%,
+      transparent
+    );
+  }
+
+  .mask-fade-b {
+    -webkit-mask-image: linear-gradient(180deg, #000 55%, transparent);
+    mask-image: linear-gradient(180deg, #000 55%, transparent);
+  }
+
+  .orb {
+    position: absolute;
+    border-radius: 9999px;
+    filter: blur(90px);
+    opacity: var(--orb-opacity, 1);
+    pointer-events: none;
+  }
+
+  /* The logo has a navy wordmark, so a light surface needs the original file
+     while dark surfaces need the white-wordmark variant. */
+  .logo-light {
+    display: none;
+  }
+
+  [data-theme="light"] .logo-dark,
+  [data-theme="paper"] .logo-dark,
+  [data-theme="slate"] .logo-dark {
+    display: none;
+  }
+
+  [data-theme="light"] .logo-light,
+  [data-theme="paper"] .logo-light,
+  [data-theme="slate"] .logo-light {
+    display: block;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

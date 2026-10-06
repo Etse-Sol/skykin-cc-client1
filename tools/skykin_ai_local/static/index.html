@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>SkyKin AI — Local Evaluation</title>
+  <link rel="stylesheet" href="/static/app.css" />
+</head>
+<body>
+  <div class="page">
+    <header class="top">
+      <div class="brand">SkyKin <span>AI Local</span></div>
+      <p class="tag">Same flow as call-center Evaluation — on your PC</p>
+    </header>
+
+    <section class="card upload-card">
+      <h1>Evaluate a recording</h1>
+      <p class="sub">Upload an Amharic call WAV (from Downloads or exported from the PBX).</p>
+      <label class="drop" id="drop">
+        <input type="file" id="file" accept="audio/*,.wav,.mp3,.ogg,.m4a" hidden />
+        <strong id="fileLabel">Choose recording</strong>
+        <span>or drop a file here</span>
+      </label>
+      <div class="meta-row">
+        <label>Caller <input id="caller" placeholder="optional" /></label>
+        <label>Agent ext <input id="agent" placeholder="e.g. 201" /></label>
+      </div>
+      <button type="button" class="btn" id="startBtn" disabled>Start evaluation</button>
+    </section>
+
+    <section class="card flow-card" id="flowCard" hidden>
+      <h2>Progress</h2>
+      <ol class="steps" id="steps">
+        <li data-step="upload">1. Load recording</li>
+        <li data-step="load">2. Load Gemini audio STT</li>
+        <li data-step="transcribe">3. Transcribe Amharic (Gemini)</li>
+        <li data-step="evaluate">4. Evaluate / score</li>
+        <li data-step="done">5. Results</li>
+      </ol>
+      <div class="bar"><div class="bar-fill" id="barFill"></div></div>
+      <p class="status" id="statusText">Waiting…</p>
+      <p class="file-name" id="jobFile"></p>
+    </section>
+
+    <section class="card result-card" id="resultCard" hidden>
+      <h2>Results</h2>
+      <p class="provider" id="provider"></p>
+      <div class="scores" id="scores"></div>
+      <h3>Notes</h3>
+      <p class="notes" id="notes"></p>
+      <h3>Transcript</h3>
+      <pre class="transcript" id="transcript"></pre>
+      <button type="button" class="btn secondary" id="againBtn">Evaluate another</button>
+    </section>
+
+    <section class="card error-card" id="errorCard" hidden>
+      <h2>Something went wrong</h2>
+      <p id="errorText"></p>
+      <button type="button" class="btn secondary" id="retryBtn">Try again</button>
+    </section>
+  </div>
+  <script src="/static/app.js"></script>
+</body>
+</html>

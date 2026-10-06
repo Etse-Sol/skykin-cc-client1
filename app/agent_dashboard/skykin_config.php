@@ -1,0 +1,2612 @@
+<?php
+/**
+ * SkyKin shared runtime config (migrate-friendly).
+ *
+ * Defaults derive from the current request / FusionPBX session — never from
+ * a hard-coded LAN IP or client1.skykin.local.
+ *
+ * Optional overrides (merged in order):
+ *   1. /etc/skykin/config.php          (server-wide, preferred on cloud)
+ *   2. __DIR__/skykin_local_config.php (per-install; keep out of git)
+ *   3. Environment variables SKYKIN_*
+ *
+ * Override files must return an array, e.g.:
+ *   return ['recordings_api_base' => 'http://pbx.example.com:8001'];
+ */
+
+if (!function_exists('skykin_http_host')) {
+
+function skykin_http_host(): string {
+	$host = (string)($_SERVER['HTTP_HOST'] ?? 'localhost');
+	return preg_replace('/:\d+$/', '', $host);
+}
+
+/** Public IP FreeSWITCH puts in WebRTC SDP for agent legs. */
+function skykin_rtp_advertise_ip(): string {
+	$env = getenv('EXTERNAL_RTP_IP');
+	if ($env !== false && trim($env) !== '') {
+		return trim($env);
+	}
+	return '196.189.236.126';
+}
+
+function skykin_is_https(): bool {
+	return (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
+		|| (isset($_SERVER['SERVER_PORT']) && (string)$_SERVER['SERVER_PORT'] === '443')
+		|| (isset($_SERVER['HTTP_X_FORWARDED_PROTO']) && strtolower((string)$_SERVER['HTTP_X_FORWARDED_PROTO']) === 'https');
+}
+
+function skykin_default_domain(): string {
+	// Logged-in tenant first. SKYKIN_DOMAIN is only a fallback for IP logins
+	// that have no session domain yet — it must not pin every agent to client1.
+	if (!empty($_SESSION['domain_name'])) {
+		return (string)$_SESSION['domain_name'];
+	}
+	if (!empty($_SESSION['user_context'])) {
+		return (string)$_SESSION['user_context'];
+	}
+	$env = getenv('SKYKIN_DOMAIN');
+	if ($env !== false && trim($env) !== '') {
+		return trim($env);
+	}
+	return skykin_http_host();
+}
+
+/**
+ * Domain from request, falling back to session / host.
+ */
+function skykin_domain_param($from_request = null): string {
+	$d = trim((string)($from_request ?? ''));
+	if ($d !== '') {
+		return $d;
+	}
+	return skykin_default_domain();
+}
+
+/** SkyKin favicon asset (under bind-mounted agent_dashboard on ecs-cc). */
+function skykin_favicon_asset_url(): string {
+	return '/app/agent_dashboard/assets/skykin-favicon.png?v=5';
+}
+
+/** Public URL for the SkyKin favicon used across all Sky Connect / FusionPBX pages. */
+function skykin_favicon_url(): string {
+	return skykin_favicon_asset_url();
+}
+
+/** HTML link tags for the SkyKin favicon. */
+function skykin_favicon_tag(): string {
+	$png = htmlspecialchars(skykin_favicon_asset_url(), ENT_QUOTES, 'UTF-8');
+	$ico = htmlspecialchars('/app/agent_dashboard/assets/favicon.ico?v=5', ENT_QUOTES, 'UTF-8');
+	$apple = htmlspecialchars('/app/agent_dashboard/assets/apple-touch-icon.png?v=5', ENT_QUOTES, 'UTF-8');
+	return '<link rel="icon" type="image/png" sizes="32x32" href="' . $png . '">' . "\n"
+		. '<link rel="shortcut icon" type="image/png" href="' . $png . '">' . "\n"
+		. '<link rel="icon" href="' . $ico . '">' . "\n"
+		. '<link rel="apple-touch-icon" sizes="180x180" href="' . $apple . '">' . "\n";
+}
+
+/**
+ * Digits-only phone (for CRM / caller-ID matching).
+ */
+function skykin_phone_digits(string $phone): string {
+	return preg_replace('/\D+/', '', $phone);
+}
+
+/**
+ * Last 9 digits of an Ethiopian mobile (handles 09…, 2519…, +2519…).
+ */
+function skykin_phone_tail(string $phone, int $len = 9): string {
+	$d = skykin_phone_digits($phone);
+	if ($d === '') {
+		return '';
+	}
+	if (strlen($d) >= 12 && str_starts_with($d, '251')) {
+		$d = substr($d, 3);
+	}
+	if (strlen($d) >= 10 && $d[0] === '0') {
+		$d = substr($d, 1);
+	}
+	return strlen($d) >= $len ? substr($d, -$len) : $d;
+}
+
+/**
+ * Normalize agent outbound dial strings for FreeSWITCH (Ethiopia mobile + landline).
+ * Internal extensions (1xx / 2xx) are returned unchanged.
+ * Mobile: 09…, 9…, +2519…, 2519…, 002519…
+ * Landline: 011…, 11…, +25111…, 25111… (Addis and other area codes 11–87)
+ */
+function skykin_normalize_et_outbound_dial(string $raw): string {
+	$s = trim($raw);
+	if ($s === '') {
+		return '';
+	}
+	if (preg_match('/^2\d{2}$/', $s) || preg_match('/^1\d{2}$/', $s)) {
+		return $s;
+	}
+	$d = preg_replace('/\D+/', '', $s);
+	if ($d === '') {
+		return $s;
+	}
+	if (str_starts_with($d, '00251') && strlen($d) >= 12) {
+		$d = substr($d, 5);
+	} elseif (str_starts_with($d, '251') && strlen($d) >= 12) {
+		$d = substr($d, 3);
+	}
+	if (strlen($d) === 10 && $d[0] === '0') {
+		if (preg_match('/^09\d{8}$/', $d)) {
+			return substr($d, 1);
+		}
+		return $d;
+	}
+	if (strlen($d) === 9) {
+		if (preg_match('/^9\d{8}$/', $d)) {
+			return $d;
+		}
+		if (preg_match('/^[1-8]\d{8}$/', $d)) {
+			return '0' . $d;
+		}
+	}
+	return $d;
+}
+
+/** Store mobiles as 09XXXXXXXX when possible. */
+function skykin_normalize_phone_storage(string $phone): string {
+	$d = skykin_phone_digits($phone);
+	if ($d === '') {
+		return trim($phone);
+	}
+	if (strlen($d) >= 12 && str_starts_with($d, '251')) {
+		return '0' . substr($d, 3);
+	}
+	if (strlen($d) === 9 && $d[0] === '9') {
+		return '0' . $d;
+	}
+	if ($d[0] !== '0' && strlen($d) >= 9) {
+		return '0' . substr($d, -9);
+	}
+	return $d;
+}
+
+/**
+ * Find a CRM contact by phone using tail-9 matching (09… vs +251…).
+ */
+function skykin_crm_ensure_contacts(PDO $db): void {
+	$isSqlite = ($db->getAttribute(PDO::ATTR_DRIVER_NAME) === 'sqlite');
+	if ($isSqlite) {
+		$db->exec("CREATE TABLE IF NOT EXISTS skykin_contacts (
+			contact_id    INTEGER PRIMARY KEY AUTOINCREMENT,
+			phone         TEXT NOT NULL UNIQUE,
+			alt_phone     TEXT,
+			full_name     TEXT NOT NULL,
+			email         TEXT,
+			company       TEXT,
+			language      TEXT DEFAULT 'English',
+			account_type  TEXT DEFAULT 'Customer',
+			notes         TEXT,
+			created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at    DATETIME DEFAULT CURRENT_TIMESTAMP
+		)");
+	} else {
+		$db->exec("CREATE TABLE IF NOT EXISTS skykin_contacts (
+			contact_id    SERIAL PRIMARY KEY,
+			phone         TEXT NOT NULL UNIQUE,
+			alt_phone     TEXT,
+			full_name     TEXT NOT NULL,
+			email         TEXT,
+			company       TEXT,
+			language      TEXT DEFAULT 'English',
+			account_type  TEXT DEFAULT 'Customer',
+			notes         TEXT,
+			created_at    TIMESTAMP DEFAULT NOW(),
+			updated_at    TIMESTAMP DEFAULT NOW()
+		)");
+	}
+}
+
+function skykin_crm_find_contact(PDO $db, string $phone): ?array {
+	$tail = skykin_phone_tail($phone);
+	if ($tail === '') {
+		return null;
+	}
+	try {
+		skykin_crm_ensure_contacts($db);
+	} catch (Throwable $e) {
+		return null;
+	}
+	$isSqlite = ($db->getAttribute(PDO::ATTR_DRIVER_NAME) === 'sqlite');
+	if (!$isSqlite) {
+		$s = $db->prepare(
+			"SELECT * FROM skykin_contacts WHERE
+				RIGHT(regexp_replace(COALESCE(phone,''), '[^0-9]', '', 'g'), 9) = :tail
+				OR RIGHT(regexp_replace(COALESCE(alt_phone,''), '[^0-9]', '', 'g'), 9) = :tail
+			ORDER BY contact_id DESC LIMIT 1"
+		);
+		$s->execute([':tail' => $tail]);
+		$row = $s->fetch(PDO::FETCH_ASSOC);
+		if ($row) {
+			return $row;
+		}
+	}
+	$clean = preg_replace('/^(\+251|00251|0)/', '', $phone);
+	$s = $db->prepare(
+		"SELECT * FROM skykin_contacts
+			WHERE phone LIKE :q OR alt_phone LIKE :q
+			   OR phone LIKE :c OR alt_phone LIKE :c
+			ORDER BY contact_id DESC LIMIT 50"
+	);
+	$s->execute([':q' => '%' . $phone . '%', ':c' => '%' . $clean . '%']);
+	foreach ($s->fetchAll(PDO::FETCH_ASSOC) as $row) {
+		foreach (['phone', 'alt_phone'] as $col) {
+			if (skykin_phone_tail((string)($row[$col] ?? '')) === $tail) {
+				return $row;
+			}
+		}
+	}
+	return null;
+}
+
+/**
+ * Timezone used for every date/epoch boundary in the dashboards.
+ *
+ * PHP defaults to UTC when date.timezone is unset, while Postgres renders CDR
+ * timestamps in the server zone. That mismatch silently drops calls from
+ * "today" windows, so resolve the real server zone instead.
+ */
+function skykin_timezone(): string {
+	static $tz = null;
+	if ($tz !== null) {
+		return $tz;
+	}
+
+	$candidates = [];
+	$cfg_file_tz = null;
+	foreach ([
+		'/etc/skykin/config.php',
+		__DIR__ . '/skykin_local_config.php',
+	] as $override) {
+		if (is_file($override)) {
+			$extra = include $override;
+			if (is_array($extra) && !empty($extra['timezone'])) {
+				$cfg_file_tz = (string)$extra['timezone'];
+			}
+		}
+	}
+	$candidates[] = $cfg_file_tz;
+	$candidates[] = getenv('SKYKIN_TZ') ?: null;
+	if (is_file('/etc/timezone')) {
+		$sys_tz = trim((string)file_get_contents('/etc/timezone'));
+		if ($sys_tz !== '' && strcasecmp($sys_tz, 'UTC') !== 0 && strcasecmp($sys_tz, 'Etc/UTC') !== 0) {
+			$candidates[] = $sys_tz;
+		}
+	}
+	if (is_link('/etc/localtime')) {
+		$link = (string)readlink('/etc/localtime');
+		if (preg_match('#zoneinfo/(.+)$#', $link, $m)
+			&& strcasecmp($m[1], 'UTC') !== 0
+			&& strcasecmp($m[1], 'Etc/UTC') !== 0) {
+			$candidates[] = $m[1];
+		}
+	}
+
+	$candidates[] = 'Africa/Addis_Ababa';
+
+	foreach ($candidates as $candidate) {
+		if (!$candidate) {
+			continue;
+		}
+		try {
+			new DateTimeZone($candidate);
+		} catch (Exception $e) {
+			continue;
+		}
+		$tz = $candidate;
+		return $tz;
+	}
+
+	$tz = date_default_timezone_get() ?: 'UTC';
+	if (strcasecmp($tz, 'UTC') === 0 || strcasecmp($tz, 'Etc/UTC') === 0) {
+		$tz = 'Africa/Addis_Ababa';
+	}
+	return $tz;
+}
+
+/** Postgres-safe IANA zone name for SQL fragments. */
+function skykin_sql_tz(): string {
+	return str_replace("'", "''", skykin_timezone());
+}
+
+/** Local wall-clock instant from a Unix epoch column (v_xml_cdr.start_epoch). */
+function skykin_cdr_local_ts_sql(string $epoch_col = 'start_epoch'): string {
+	$tz = skykin_sql_tz();
+	// to_timestamp() returns timestamptz; one step into the display zone.
+	return "timezone('{$tz}', to_timestamp({$epoch_col}))";
+}
+
+/** Format a CDR epoch in the dashboard timezone. */
+function skykin_cdr_time_sql(string $pg_format, string $epoch_col = 'start_epoch'): string {
+	return 'to_char(' . skykin_cdr_local_ts_sql($epoch_col) . ", '{$pg_format}')";
+}
+
+/** Format a timestamptz column in the dashboard timezone. */
+function skykin_db_time_sql(string $pg_format, string $ts_col): string {
+	$tz = skykin_sql_tz();
+	return "to_char(timezone('{$tz}', {$ts_col}), '{$pg_format}')";
+}
+
+/**
+ * SQL fragment that matches CDRs belonging to an agent extension.
+ *
+ * Outbound legs store the extension as caller_id_number. Inbound queue legs
+ * store the DID or 8000 as destination and the answering agent in cc_agent,
+ * so a caller/destination-only filter silently drops every inbound.
+ */
+function skykin_cdr_agent_sql(string $ext_param = ':e'): string {
+	return '('
+		. 'caller_id_number = ' . $ext_param
+		. ' OR destination_number = ' . $ext_param
+		. ' OR caller_destination = ' . $ext_param
+		. " OR last_arg LIKE '%user/' || " . $ext_param . " || '@%'"
+		. " OR cc_agent_bridged LIKE '%/' || " . $ext_param . " || '@%'"
+		. ' OR (cc_agent IN ('
+		. 'SELECT call_center_agent_uuid::text FROM v_call_center_agents'
+		. ' WHERE agent_id = ' . $ext_param
+		. " OR agent_contact LIKE '%/' || " . $ext_param . " || '@%'"
+		. ") AND destination_number ~ '^[+0-9]{3,}$')"
+		. ')';
+}
+
+/** Per-agent CDR totals for supervisor / leaderboard (matches agent dashboard stats). */
+function skykin_cdr_agent_stats(PDO $db, string $domain, string $ext, int $ts, int $te): array {
+	$agent_sql = skykin_cdr_agent_sql(':e');
+	$rep = skykin_cdr_reportable_sql();
+	$unhandled = skykin_cdr_unhandled_sql();
+	$abd = skykin_cdr_abandoned_sql();
+	$miss = skykin_cdr_missed_sql();
+	$ans = skykin_cdr_answered_sql();
+	$talk_expr = 'GREATEST(0, billsec - COALESCE(waitsec, 0))';
+	$s = $db->prepare("SELECT
+		SUM(CASE WHEN {$rep} THEN 1 ELSE 0 END) as total,
+		SUM(CASE WHEN {$ans} THEN 1 ELSE 0 END) as answered,
+		SUM(CASE WHEN {$abd} THEN 1 ELSE 0 END) as abandoned,
+		SUM(CASE WHEN {$miss} THEN 1 ELSE 0 END) as missed_hard,
+		SUM(CASE WHEN {$unhandled} THEN 1 ELSE 0 END) as missed,
+		COALESCE(SUM(CASE WHEN {$ans} THEN {$talk_expr} ELSE 0 END),0) as total_talk,
+		COALESCE(AVG(CASE WHEN {$ans} THEN {$talk_expr} END),0) as avg_dur,
+		COALESCE(MAX(CASE WHEN {$ans} THEN {$talk_expr} END),0) as max_dur
+		FROM v_xml_cdr WHERE domain_name=:d
+		AND {$agent_sql}
+		AND start_epoch>=:ts AND start_epoch<=:te");
+	$s->execute([':d' => $domain, ':e' => $ext, ':ts' => $ts, ':te' => $te]);
+	$row = $s->fetch(PDO::FETCH_ASSOC);
+	return is_array($row) ? $row : [];
+}
+
+/**
+ * Ethio inbound DIDs used for parallel/sequential carrier hunt (035–039 / 757–759).
+ */
+function skykin_cdr_is_hunt_did(string $number): bool {
+	$digits = preg_replace('/\D+/', '', $number);
+	return (bool)preg_match('/11113875[789]$/', $digits)
+		|| (bool)preg_match('/11619803[5-9]$/', $digits)
+		|| (bool)preg_match('/(^|[^0-9])8414$/', $digits)
+		|| $digits === '8414';
+}
+
+/**
+ * Ethio multi-DID hunt legs: inbound cancel/clear/reject with no talk time.
+ * Carrier rings several DIDs (035–039); losing legs cancel, or blacklist rejects all of them.
+ */
+function skykin_cdr_hunt_leg_sql(): string {
+	$did = "(destination_number ~ '(11619803[5-9]|11113875[789]|8414)$'"
+		. " OR caller_destination ~ '(11619803[5-9]|11113875[789]|8414)$')";
+	return "(billsec = 0 AND LOWER(COALESCE(direction, '')) = 'inbound'"
+		. " AND ("
+		. "  (hangup_cause IN ('ORIGINATOR_CANCEL', 'NORMAL_CLEARING') AND (duration = 0 OR {$did}))"
+		. "  OR (hangup_cause = 'CALL_REJECTED' AND {$did})"
+		. "))";
+}
+
+/**
+ * Abandoned = reached IVR/queue (billsec > 0) but never bridged to an agent.
+ * Ethio hunt/bridge noise is excluded (collapsed separately).
+ */
+function skykin_cdr_abandoned_sql(): string {
+	return '(billsec > 0'
+		. " AND LOWER(COALESCE(direction, '')) = 'inbound'"
+		. ' AND ' . skykin_cdr_reportable_sql()
+		. ' AND NOT ' . skykin_cdr_agent_bridge_sql() . ')';
+}
+
+/**
+ * Missed = never really entered service (no IVR talk time): reject, no route, cancel, etc.
+ * Does not include IVR-only abandons (see skykin_cdr_abandoned_sql).
+ */
+function skykin_cdr_missed_sql(): string {
+	return '(billsec = 0 AND NOT ' . skykin_cdr_hunt_leg_sql()
+		. ' AND NOT ' . skykin_cdr_bridge_retry_leg_sql() . ')';
+}
+
+/** Unhandled = Abandoned + Missed (agent MISS column / abandon rate). */
+function skykin_cdr_unhandled_sql(): string {
+	return '(' . skykin_cdr_abandoned_sql() . ' OR ' . skykin_cdr_missed_sql() . ')';}
+
+/**
+ * Failed ring to user/2xx@domain — each bridge retry logs a separate CDR.
+ * WebRTC agents may show a sofia contact token (e.g. j2kriger) instead of 202.
+ */
+function skykin_cdr_bridge_retry_leg_sql(): string {
+	$causes = "'NORMAL_TEMPORARY_FAILURE', 'NORMAL_CLEARING',"
+		. " 'NO_ANSWER', 'USER_BUSY', 'CALL_REJECTED', 'ORIGINATOR_CANCEL', 'ALLOTTED_TIMEOUT'";
+	return "(billsec = 0"
+		. " AND (direction IS NULL OR LOWER(COALESCE(direction, '')) IN ('', 'inbound'))"
+		. " AND hangup_cause IN ({$causes})"
+		. " AND (destination_number ~ '^(1[0-9]{2}|2[0-9]{2})$'"
+		. " OR last_arg ~* 'user/(1[0-9]{2}|2[0-9]{2})@'"
+		. " OR cc_agent_bridged ~* '/(1[0-9]{2}|2[0-9]{2})@'"
+		. " OR (destination_number ~ '^[a-z0-9]{4,16}$'"
+		. " AND destination_number !~ '^[0-9]+$'"
+		. " AND caller_id_number ~ '^[+0-9]{9,}$')))";
+}
+
+/** WebRTC contact token in destination_number instead of agent extension. */
+function skykin_cdr_is_webrtc_bridge_token(string $dest): bool {
+	$dest = strtolower(trim($dest));
+	if ($dest === '' || $dest === '8000') {
+		return false;
+	}
+	if (preg_match('/^(1\d{2}|2[0-9]{2})$/', $dest)) {
+		return false;
+	}
+	if (skykin_cdr_is_hunt_did($dest)) {
+		return false;
+	}
+	$digits = preg_replace('/\D+/', '', $dest);
+	if ($digits !== '' && strlen($digits) >= 8 && preg_match('/^\d+$/', $digits)) {
+		return false;
+	}
+	return (bool)preg_match('/^[a-z0-9]{4,16}$/', $dest);
+}
+
+function skykin_cdr_is_external_caller_number(string $number): bool {
+	$digits = preg_replace('/\D+/', '', $number);
+	return strlen($digits) >= 9 && !preg_match('/^(1\d{2}|2[0-9]{2})$/', $digits);
+}
+
+/** Agent extension in destination or last_arg (B-leg bridge rows). */
+function skykin_cdr_row_agent_ext(array $row): string {
+	$dest = preg_replace('/@.*$/', '', trim((string)($row['destination_number'] ?? '')));
+	$dest_digits = preg_replace('/\D+/', '', $dest);
+	if (preg_match('/^(1\d{2}|2[0-9]{2})$/', $dest_digits)) {
+		return $dest_digits;
+	}
+	$arg = (string)($row['last_arg'] ?? '');
+	if (preg_match('/user\/(1\d{2}|2[0-9]{2})@/i', $arg, $m)) {
+		return $m[1];
+	}
+	$bridged = (string)($row['cc_agent_bridged'] ?? '');
+	if (preg_match('/\/(1\d{2}|2[0-9]{2})@/i', $bridged, $m)) {
+		return $m[1];
+	}
+	return '';
+}
+
+/**
+ * True when an agent actually connected (picked up), not merely offered/rung.
+ *
+ * last_arg=user/2xx@ is set on failed ring attempts too (after IVR answer), so
+ * it must NOT count as Answered by itself — that mislabels Abandoned as Answered
+ * and makes "Answered" rows with no recording.
+ *
+ * record_name alone is also NOT enough — older calls recorded IVR on answer.
+ *
+ * Strong proof: cc_agent_bridged, bridge_uuid, or waitsec+talk with agent last_arg.
+ */
+function skykin_cdr_has_agent_connected(array $row): bool {
+	$bridged = (string)($row['cc_agent_bridged'] ?? '');
+	if (preg_match('/\/(1\d{2}|2[0-9]{2})@/i', $bridged)) {
+		return true;
+	}
+	$bridgeUuid = trim((string)($row['bridge_uuid'] ?? ''));
+	if ($bridgeUuid !== '') {
+		return true;
+	}
+	// Queue/wait recorded and talk continued after wait with an agent leg.
+	$bill = (int)($row['billsec'] ?? 0);
+	$wait = (int)($row['waitsec'] ?? 0);
+	if ($wait > 0 && $bill > $wait && skykin_cdr_row_agent_ext($row) !== '') {
+		return true;
+	}
+	return false;
+}
+
+/**
+ * Agent talk seconds (excludes IVR/queue wait after early answer).
+ * FreeSWITCH billsec starts when the A-leg is answered (opening audio);
+ * waitsec is time until the agent bridge — talk = billsec − waitsec.
+ */
+function skykin_cdr_talksec(array $row): int {
+	$bill = (int)($row['billsec'] ?? 0);
+	if ($bill <= 0) {
+		return 0;
+	}
+	$dir = strtolower(trim((string)($row['direction'] ?? '')));
+	if ($dir === 'outbound' || $dir === 'local') {
+		return $bill;
+	}
+	$wait = (int)($row['waitsec'] ?? 0);
+	if ($wait < 0) {
+		$wait = 0;
+	}
+	if ($wait > $bill) {
+		$wait = $bill;
+	}
+	if ($wait <= 0) {
+		return $bill;
+	}
+	return $bill - $wait;
+}
+
+/** Alias used by Answered / Abandoned helpers. */
+function skykin_cdr_has_agent_bridge(array $row): bool {
+	return skykin_cdr_has_agent_connected($row);
+}
+
+/**
+ * SQL: agent actually connected (not IVR + failed ring with last_arg only).
+ */
+function skykin_cdr_agent_bridge_sql(): string {
+	return '('
+		. "cc_agent_bridged ~* '/(1[0-9]{2}|2[0-9]{2})@'"
+		. " OR (bridge_uuid IS NOT NULL AND TRIM(COALESCE(bridge_uuid::text, '')) <> '')"
+		. " OR ("
+		. "  COALESCE(waitsec, 0) > 0 AND billsec > waitsec"
+		. "  AND last_arg ~* 'user/(1[0-9]{2}|2[0-9]{2})@'"
+		. " )"
+		. ')';
+}
+
+/** Count in totals / answer-rate denominators (exclude hunt noise). */
+function skykin_cdr_reportable_sql(): string {
+	return 'NOT ' . skykin_cdr_hunt_leg_sql() . ' AND NOT ' . skykin_cdr_bridge_retry_leg_sql();
+}
+
+/**
+ * Answered = outbound/local with talk, or inbound with real agent connect.
+ * IVR-only / ring-no-pickup (last_arg only) = Abandoned.
+ */
+function skykin_cdr_answered_sql(): string {
+	$agent = skykin_cdr_agent_bridge_sql();
+	return '(billsec > 0 AND ' . skykin_cdr_reportable_sql()
+		. " AND (LOWER(COALESCE(direction, '')) IN ('outbound', 'local')"
+		. " OR {$agent}))";
+}
+
+/** PHP mirror of skykin_cdr_answered_sql for collapsed rows. */
+function skykin_cdr_is_answered_row(array $row): bool {
+	if ((int)($row['billsec'] ?? 0) <= 0) {
+		return false;
+	}
+	$dir = strtolower(trim((string)($row['direction'] ?? '')));
+	if ($dir === 'outbound' || $dir === 'local') {
+		return true;
+	}
+	return skykin_cdr_has_agent_connected($row);
+}
+
+/** Reached IVR/queue but never spoke with an agent. */
+function skykin_cdr_is_abandoned_row(array $row): bool {
+	if (skykin_cdr_is_answered_row($row)) {
+		return false;
+	}
+	if ((int)($row['billsec'] ?? 0) <= 0) {
+		return false;
+	}
+	$dir = strtolower(trim((string)($row['direction'] ?? '')));
+	return $dir === 'inbound' || $dir === '';
+}
+
+/** Hard miss: never entered IVR talk time (reject / cancel / no route). */
+function skykin_cdr_is_missed_row(array $row): bool {
+	if (skykin_cdr_is_answered_row($row) || skykin_cdr_is_abandoned_row($row)) {
+		return false;
+	}
+	$dir = strtolower(trim((string)($row['direction'] ?? '')));
+	if ($dir === 'outbound' || $dir === 'local') {
+		return false;
+	}
+	if (!empty($row['_busy_rep']) || skykin_cdr_is_agent_busy_leg($row)) {
+		return false;
+	}
+	return true;
+}
+
+function skykin_cdr_is_hunt_leg(array $row): bool {
+	if ((int)($row['billsec'] ?? 0) > 0) {
+		return false;
+	}
+	if (strtolower((string)($row['direction'] ?? '')) !== 'inbound') {
+		return false;
+	}
+	$cause = strtoupper(trim((string)($row['hangup_cause'] ?? '')));
+	$dest = (string)($row['destination_number'] ?? '');
+	$cdest = (string)($row['caller_destination'] ?? '');
+	$isDid = skykin_cdr_is_hunt_did($dest) || skykin_cdr_is_hunt_did($cdest);
+	if ($cause === 'CALL_REJECTED' && $isDid) {
+		return true;
+	}
+	if ($cause === 'ORIGINATOR_CANCEL' && (int)($row['duration'] ?? 0) === 0) {
+		return true;
+	}
+	if (!in_array($cause, ['ORIGINATOR_CANCEL', 'NORMAL_CLEARING', 'NORMAL_UNSPECIFIED'], true)) {
+		return false;
+	}
+	return $isDid || (int)($row['duration'] ?? 0) === 0;
+}
+
+/**
+ * Inbound to Ethio hunt DID (035–039 / 8414 / etc.) — answered or not.
+ * One customer dial produces several of these; collapse to one row.
+ */
+function skykin_cdr_is_hunt_did_inbound(array $row): bool {
+	if (strtolower(trim((string)($row['direction'] ?? ''))) !== 'inbound') {
+		return false;
+	}
+	$dest = (string)($row['destination_number'] ?? '');
+	$cdest = (string)($row['caller_destination'] ?? '');
+	return skykin_cdr_is_hunt_did($dest) || skykin_cdr_is_hunt_did($cdest);
+}
+
+/**
+ * Inbound to Ethio hunt DID that did not reach an agent (IVR-only or reject).
+ */
+function skykin_cdr_is_hunt_did_miss(array $row): bool {
+	return skykin_cdr_is_hunt_did_inbound($row) && !skykin_cdr_is_answered_row($row);
+}
+
+/**
+ * Inbound B-leg rows (dest 101–199 / 201–299) with no talk — bridge retries to the agent.
+ * One customer call can produce hundreds of these; collapse to one row per caller window.
+ */
+function skykin_cdr_is_failed_agent_bridge_leg(array $row): bool {
+	if (skykin_cdr_is_hunt_leg($row)) {
+		return false;
+	}
+	if ((int)($row['billsec'] ?? 0) > 0) {
+		return false;
+	}
+	$dir = strtolower(trim((string)($row['direction'] ?? '')));
+	if ($dir === 'outbound' || $dir === 'local') {
+		return false;
+	}
+	$dest = (string)($row['destination_number'] ?? '');
+	$hasAgent = skykin_cdr_row_agent_ext($row) !== '';
+	$opaqueBridge = skykin_cdr_is_webrtc_bridge_token($dest)
+		&& skykin_cdr_is_external_caller_number((string)($row['caller_id_number'] ?? ''));
+	if (!$hasAgent && !$opaqueBridge) {
+		return false;
+	}
+	$cause = strtoupper(trim((string)($row['hangup_cause'] ?? '')));
+	return in_array($cause, [
+		'NORMAL_TEMPORARY_FAILURE',
+		'NORMAL_CLEARING',
+		'NO_ANSWER',
+		'USER_BUSY',
+		'CALL_REJECTED',
+		'ORIGINATOR_CANCEL',
+		'ALLOTTED_TIMEOUT',
+	], true);
+}
+
+function skykin_cdr_is_collapsible_noise_leg(array $row): bool {
+	return skykin_cdr_is_hunt_leg($row)
+		|| skykin_cdr_is_failed_agent_bridge_leg($row)
+		|| skykin_cdr_is_hunt_did_inbound($row);
+}
+
+/** Inbound bridge attempt where the agent line returned USER_BUSY (not a customer missed call). */
+function skykin_cdr_is_agent_busy_leg(array $row): bool {
+	if (strtoupper(trim((string)($row['hangup_cause'] ?? ''))) !== 'USER_BUSY') {
+		return false;
+	}
+	if ((int)($row['billsec'] ?? 0) > 0) {
+		return false;
+	}
+	$dir = strtolower(trim((string)($row['direction'] ?? '')));
+	if ($dir === 'outbound' || $dir === 'local') {
+		return false;
+	}
+	$dest = (string)($row['destination_number'] ?? '');
+	if (skykin_cdr_row_agent_ext($row) !== '') {
+		return true;
+	}
+	return skykin_cdr_is_webrtc_bridge_token($dest)
+		&& skykin_cdr_is_external_caller_number((string)($row['caller_id_number'] ?? ''));
+}
+
+/**
+ * Map WebRTC sofia contact tokens (j2kriger) to extension for busy-leg display.
+ *
+ * @return array<string, string> token => extension
+ */
+function skykin_fs_sip_contact_tokens(string $domain, array $extensions): array {
+	$map = [];
+	foreach ($extensions as $ext) {
+		$ext = preg_replace('/\D+/', '', (string)$ext);
+		if ($ext === '') {
+			continue;
+		}
+		$contact = skykin_fs_api('sofia_contact */' . $ext . '@' . $domain);
+		if (!is_string($contact) || $contact === '') {
+			continue;
+		}
+		if (preg_match('/sip:([^@;>\s]+)@/i', $contact, $m)) {
+			$token = strtolower(trim($m[1]));
+			if ($token !== '' && $token !== $ext) {
+				$map[$token] = $ext;
+			}
+		}
+	}
+	return $map;
+}
+
+/** Resolve agent extension on a busy CDR row. */
+function skykin_cdr_busy_row_agent_ext(array $row, array $tokenToExt = []): string {
+	$ext = skykin_cdr_row_agent_ext($row);
+	if ($ext !== '') {
+		return $ext;
+	}
+	$dest = strtolower(trim((string)($row['destination_number'] ?? '')));
+	if ($dest !== '' && isset($tokenToExt[$dest])) {
+		return $tokenToExt[$dest];
+	}
+	return '';
+}
+
+/** Last 9 digits of a phone for hunt grouping. */
+function skykin_cdr_caller_key(string $number): string {
+	$digits = preg_replace('/\D+/', '', $number);
+	if ($digits === '') {
+		return '';
+	}
+	return strlen($digits) >= 9 ? substr($digits, -9) : $digits;
+}
+
+/** Group parallel hunt legs: same caller within a short window = one customer attempt. */
+function skykin_cdr_hunt_group_key(array $row, int $bucketSec = 120): string {
+	$epoch = (int)($row['start_epoch'] ?? 0);
+	$caller = skykin_cdr_caller_key((string)($row['caller_id_number'] ?? ''));
+	if ($caller === '') {
+		$caller = skykin_cdr_caller_key((string)($row['caller_destination'] ?? ''));
+	}
+	if ($caller === '') {
+		return 'unknown|' . (int)floor($epoch / $bucketSec);
+	}
+	return $caller . '|' . (int)floor($epoch / $bucketSec);
+}
+
+/**
+ * Collapse Ethio multi-DID hunt legs (answered + missed + rejects) and bridge
+ * retries into one row per caller attempt. Prefer longest real Answered; else one Missed.
+ */
+function skykin_cdr_collapse_hunt_legs(array $rows): array {
+	if ($rows === []) {
+		return [];
+	}
+
+	$hunt_groups = [];
+	$busy_groups = [];
+	$plain = [];
+	foreach ($rows as $row) {
+		if (skykin_cdr_is_agent_busy_leg($row)) {
+			$agent = skykin_cdr_row_agent_ext($row);
+			$key = skykin_cdr_hunt_group_key($row) . '|' . $agent;
+			if (!isset($busy_groups[$key])) {
+				$busy_groups[$key] = [];
+			}
+			$busy_groups[$key][] = $row;
+			continue;
+		}
+		if (!skykin_cdr_is_collapsible_noise_leg($row)) {
+			$plain[] = $row;
+			continue;
+		}
+		$key = skykin_cdr_hunt_group_key($row);
+		if (!isset($hunt_groups[$key])) {
+			$hunt_groups[$key] = [];
+		}
+		$hunt_groups[$key][] = $row;
+	}
+
+	// Merge adjacent time-buckets for the same caller (hunt can straddle a boundary).
+	$merged = [];
+	foreach ($hunt_groups as $key => $legs) {
+		$caller = explode('|', $key, 2)[0];
+		$epoch = 0;
+		foreach ($legs as $leg) {
+			$epoch = max($epoch, (int)($leg['start_epoch'] ?? 0));
+		}
+		$placed = false;
+		foreach ($merged as $mk => &$mlegs) {
+			$mc = explode('|', $mk, 2)[0];
+			if ($mc !== $caller) {
+				continue;
+			}
+			$near = false;
+			foreach ($mlegs as $leg) {
+				if (abs((int)($leg['start_epoch'] ?? 0) - $epoch) <= 120) {
+					$near = true;
+					break;
+				}
+			}
+			if ($near) {
+				foreach ($legs as $leg) {
+					$mlegs[] = $leg;
+				}
+				$placed = true;
+				break;
+			}
+		}
+		unset($mlegs);
+		if (!$placed) {
+			$merged[$key] = $legs;
+		}
+	}
+
+	// Also suppress Agent Busy when same caller was answered in-window.
+	$answered_by_caller = [];
+	foreach ($merged as $legs) {
+		foreach ($legs as $leg) {
+			if (!skykin_cdr_is_answered_row($leg)) {
+				continue;
+			}
+			$ck = skykin_cdr_caller_key((string)($leg['caller_id_number'] ?? ''));
+			if ($ck !== '') {
+				$answered_by_caller[$ck][] = (int)($leg['start_epoch'] ?? 0);
+			}
+		}
+	}
+	foreach ($plain as $leg) {
+		if (!skykin_cdr_is_answered_row($leg)) {
+			continue;
+		}
+		$ck = skykin_cdr_caller_key((string)($leg['caller_id_number'] ?? ''));
+		if ($ck !== '') {
+			$answered_by_caller[$ck][] = (int)($leg['start_epoch'] ?? 0);
+		}
+	}
+
+	$collapsed = [];
+	foreach ($merged as $legs) {
+		usort($legs, static function ($a, $b) {
+			$rank = static function ($row): int {
+				if (skykin_cdr_is_answered_row($row)) {
+					return 3;
+				}
+				if (skykin_cdr_is_abandoned_row($row)) {
+					return 2;
+				}
+				return 1;
+			};
+			$ar = $rank($a);
+			$br = $rank($b);
+			if ($ar !== $br) {
+				return $br <=> $ar;
+			}
+			$aRec = trim((string)($a['record_name'] ?? '')) !== '' ? 1 : 0;
+			$bRec = trim((string)($b['record_name'] ?? '')) !== '' ? 1 : 0;
+			if ($aRec !== $bRec) {
+				return $bRec <=> $aRec;
+			}
+			$aBill = skykin_cdr_talksec($a);
+			$bBill = skykin_cdr_talksec($b);
+			if ($aBill !== $bBill) {
+				return $bBill <=> $aBill;
+			}
+			$aRaw = (int)($a['billsec'] ?? 0);
+			$bRaw = (int)($b['billsec'] ?? 0);
+			if ($aRaw !== $bRaw) {
+				return $bRaw <=> $aRaw;
+			}
+			return (int)($b['start_epoch'] ?? 0) <=> (int)($a['start_epoch'] ?? 0);
+		});
+		$rep = $legs[0];
+		// Keep a recording path from any leg in the hunt group.
+		if (trim((string)($rep['record_name'] ?? '')) === '') {
+			foreach ($legs as $leg) {
+				if (trim((string)($leg['record_name'] ?? '')) !== '') {
+					$rep['record_name'] = $leg['record_name'];
+					$rep['record_path'] = $leg['record_path'] ?? ($rep['record_path'] ?? '');
+					break;
+				}
+			}
+		}
+		$rep['_hunt_rep'] = true;
+		$rep['_hunt_legs'] = count($legs);
+		$collapsed[] = $rep;
+	}
+
+	foreach ($busy_groups as $legs) {
+		$rep = $legs[0];
+		$ck = skykin_cdr_caller_key((string)($rep['caller_id_number'] ?? ''));
+		$epoch = (int)($rep['start_epoch'] ?? 0);
+		$suppressed = false;
+		if ($ck !== '' && isset($answered_by_caller[$ck])) {
+			foreach ($answered_by_caller[$ck] as $ae) {
+				if (abs($ae - $epoch) <= 120) {
+					$suppressed = true;
+					break;
+				}
+			}
+		}
+		if ($suppressed) {
+			continue;
+		}
+		usort($legs, static function ($a, $b) {
+			return (int)($b['start_epoch'] ?? 0) <=> (int)($a['start_epoch'] ?? 0);
+		});
+		$rep = $legs[0];
+		$rep['_busy_rep'] = true;
+		$rep['_busy_legs'] = count($legs);
+		$collapsed[] = $rep;
+	}
+
+	$out = array_merge($plain, $collapsed);
+	usort($out, static function ($a, $b) {
+		return (int)($b['start_epoch'] ?? 0) <=> (int)($a['start_epoch'] ?? 0);
+	});
+	return $out;
+}
+
+/** Fetch CDR rows for a period (includes hunt legs, then collapses). */
+function skykin_cdr_fetch_period(
+	PDO $db,
+	string $domain,
+	int $ts,
+	int $te,
+	string $extraAnd = '',
+	array $params = [],
+	?int $limit = null
+): array {
+	$where = 'domain_name=:d AND start_epoch>=:ts AND start_epoch<=:te' . $extraAnd;
+	$p = array_merge([':d' => $domain, ':ts' => $ts, ':te' => $te], $params);
+	$lim = $limit !== null ? ' LIMIT ' . (int)$limit : '';
+	$local_ts = skykin_cdr_local_ts_sql();
+	$s = $db->prepare(
+		"SELECT start_epoch,
+			" . skykin_cdr_time_sql('YYYY-MM-DD HH24:MI') . " as call_time,
+			" . skykin_cdr_time_sql('YYYY-MM-DD') . " as call_day,
+			EXTRACT(DOW FROM {$local_ts})::int as dow,
+			EXTRACT(HOUR FROM {$local_ts})::int as hour,
+			caller_id_name, caller_id_number, destination_number, caller_destination,
+			direction, billsec, waitsec, duration, hangup_cause, last_arg, cc_agent, cc_agent_bridged,
+			bridge_uuid, record_name, record_path
+		FROM v_xml_cdr WHERE {$where} ORDER BY start_epoch DESC{$lim}"
+	);
+	$s->execute($p);
+	return skykin_cdr_collapse_hunt_legs($s->fetchAll(PDO::FETCH_ASSOC));
+}
+
+/** KPI totals from collapsed CDR rows. */
+function skykin_cdr_period_metrics(array $rows): array {
+	$total = count($rows);
+	$answered = 0;
+	$answered_inbound = 0;
+	$answered_outbound = 0;
+	$abandoned = 0;
+	$missed = 0;
+	$inbound = 0;
+	$outbound = 0;
+	$local = 0;
+	$talkSum = 0;
+	$talkCnt = 0;
+	foreach ($rows as $r) {
+		$b = (int)($r['billsec'] ?? 0);
+		$dir = strtolower(trim((string)($r['direction'] ?? '')));
+		if ($dir === 'inbound') {
+			$inbound++;
+		} elseif ($dir === 'outbound') {
+			$outbound++;
+		} elseif ($dir === 'local') {
+			$local++;
+		}
+		$label = skykin_cdr_result_label($r);
+		if ($label === 'Answered') {
+			$answered++;
+			$talkSum += skykin_cdr_talksec($r);
+			$talkCnt++;
+			if ($dir === 'outbound' || $dir === 'local') {
+				$answered_outbound++;
+			} else {
+				$answered_inbound++;
+			}
+		} elseif ($label === 'Abandoned') {
+			$abandoned++;
+		} elseif ($label === 'Missed') {
+			$missed++;
+		}
+	}
+	$unhandled = $abandoned + $missed;
+	return [
+		'total' => $total,
+		'answered' => $answered,
+		'answered_inbound' => $answered_inbound,
+		'answered_outbound' => $answered_outbound,
+		'abandoned' => $abandoned,
+		'missed' => $missed,
+		'unhandled' => $unhandled,
+		'inbound' => $inbound,
+		'outbound' => $outbound,
+		'local' => $local,
+		'total_talk' => $talkSum,
+		'avg_dur' => $talkCnt > 0 ? (int)round($talkSum / $talkCnt) : 0,
+		'avg_talk' => $talkCnt > 0 ? (int)round($talkSum / $talkCnt) : 0,
+		'abandon_rate' => $inbound > 0 ? round($unhandled / $inbound * 100, 1) : 0,
+	];
+}
+
+/** Daily volume buckets from collapsed rows. */
+function skykin_cdr_daily_volume(array $rows): array {
+	$byDay = [];
+	foreach ($rows as $r) {
+		$day = (string)($r['call_day'] ?? date('Y-m-d', (int)($r['start_epoch'] ?? 0)));
+		if (!isset($byDay[$day])) {
+			$byDay[$day] = [
+				'day' => $day, 'total' => 0, 'answered' => 0, 'abandoned' => 0, 'missed' => 0,
+				'inbound' => 0, 'outbound' => 0, 'local' => 0, 'dur_sum' => 0, 'dur_cnt' => 0,
+			];
+		}
+		$b = (int)($r['billsec'] ?? 0);
+		$dir = strtolower(trim((string)($r['direction'] ?? '')));
+		$byDay[$day]['total']++;
+		if ($dir === 'inbound') {
+			$byDay[$day]['inbound']++;
+		} elseif ($dir === 'outbound') {
+			$byDay[$day]['outbound']++;
+		} elseif ($dir === 'local') {
+			$byDay[$day]['local']++;
+		}
+		$label = skykin_cdr_result_label($r);
+		if ($label === 'Answered') {
+			$byDay[$day]['answered']++;
+			$byDay[$day]['dur_sum'] += skykin_cdr_talksec($r);
+			$byDay[$day]['dur_cnt']++;
+		} elseif ($label === 'Abandoned') {
+			$byDay[$day]['abandoned']++;
+		} elseif ($label === 'Missed') {
+			$byDay[$day]['missed']++;
+		}
+	}
+	$out = array_values($byDay);
+	foreach ($out as &$row) {
+		$row['avg_dur'] = $row['dur_cnt'] > 0 ? (int)round($row['dur_sum'] / $row['dur_cnt']) : 0;
+		unset($row['dur_sum'], $row['dur_cnt']);
+	}
+	unset($row);
+	usort($out, static fn($a, $b) => strcmp($a['day'], $b['day']));
+	return $out;
+}
+
+/** Hourly volume from collapsed rows. */
+function skykin_cdr_hourly_volume(array $rows): array {
+	$byHour = [];
+	foreach ($rows as $r) {
+		$hour = (int)($r['hour'] ?? 0);
+		if (!isset($byHour[$hour])) {
+			$byHour[$hour] = ['hour' => $hour, 'total' => 0, 'answered' => 0, 'abandoned' => 0, 'missed' => 0];
+		}
+		$byHour[$hour]['total']++;
+		$label = skykin_cdr_result_label($r);
+		if ($label === 'Answered') {
+			$byHour[$hour]['answered']++;
+		} elseif ($label === 'Abandoned') {
+			$byHour[$hour]['abandoned']++;
+		} elseif ($label === 'Missed') {
+			$byHour[$hour]['missed']++;
+		}
+	}
+	$out = array_values($byHour);
+	usort($out, static fn($a, $b) => $a['hour'] <=> $b['hour']);
+	return $out;
+}
+
+/** Heatmap buckets from collapsed rows. */
+function skykin_cdr_hourly_heatmap(array $rows): array {
+	$map = [];
+	foreach ($rows as $r) {
+		$dow = (int)($r['dow'] ?? 0);
+		$hour = (int)($r['hour'] ?? 0);
+		$key = $dow . '|' . $hour;
+		if (!isset($map[$key])) {
+			$map[$key] = ['dow' => $dow, 'hour' => $hour, 'total' => 0];
+		}
+		$map[$key]['total']++;
+	}
+	$out = array_values($map);
+	usort($out, static function ($a, $b) {
+		return $a['dow'] === $b['dow'] ? $a['hour'] <=> $b['hour'] : $a['dow'] <=> $b['dow'];
+	});
+	return $out;
+}
+
+/** Format mm:ss from seconds. */
+function skykin_cdr_fmt_dur(int $sec): string {
+	if ($sec < 0) {
+		$sec = 0;
+	}
+	return floor($sec / 60) . ':' . str_pad((string)($sec % 60), 2, '0', STR_PAD_LEFT);
+}
+
+/** Duration shown in history: agent talk for Answered, else billsec (IVR time). */
+function skykin_cdr_display_sec(array $row): int {
+	if (skykin_cdr_is_answered_row($row)) {
+		return skykin_cdr_talksec($row);
+	}
+	return (int)($row['billsec'] ?? 0);
+}
+
+/**
+ * Outbound customer disposition from FreeSWITCH hangup_cause.
+ * Ethio often returns NO_USER_RESPONSE for both phone-off and no-answer;
+ * label that as "No answer" so callback/history is not misleading.
+ * Reserve "Switched off" for clearer absent/unregistered causes.
+ */
+function skykin_outbound_fail_label(string $cause): string {
+	$c = strtoupper(preg_replace('/[^A-Z0-9_]/', '', $cause) ?? '');
+	if ($c === 'USER_BUSY') {
+		return 'Busy';
+	}
+	if ($c === 'CALL_REJECTED') {
+		return 'Declined';
+	}
+	// No pickup / timed out / Ethio opaque "no user response".
+	if (in_array($c, ['NORMAL_TEMPORARY_FAILURE', 'DESTINATION_OUT_OF_ORDER',
+		'ALLOTTED_TIMEOUT', 'NO_RESPONSE', 'NO_USER_RESPONSE', 'NO_ANSWER'], true)) {
+		return 'No answer';
+	}
+	// Stronger "phone not reachable / off" signals.
+	if (in_array($c, ['SUBSCRIBER_ABSENT', 'USER_NOT_REGISTERED'], true)) {
+		return 'Switched off';
+	}
+	if (in_array($c, ['UNALLOCATED_NUMBER', 'NO_ROUTE_DESTINATION', 'INVALID_NUMBER_FORMAT'], true)) {
+		return 'Number not in service';
+	}
+	if ($c === 'NETWORK_OUT_OF_ORDER') {
+		return 'Network unavailable';
+	}
+	if ($c === 'ORIGINATOR_CANCEL') {
+		return 'Call cancelled';
+	}
+	if ($c === 'NORMAL_CLEARING') {
+		return 'Call ended';
+	}
+	if ($c !== '') {
+		return 'Failed (' . strtolower(str_replace('_', ' ', $c)) . ')';
+	}
+	return 'Failed';
+}
+
+/** UI label: Answered | Abandoned | Missed | Busy / No answer… (outbound) | Agent Busy */
+function skykin_cdr_result_label(array $row): string {
+	if (skykin_cdr_is_answered_row($row)) {
+		return 'Answered';
+	}
+	$dir = strtolower(trim((string)($row['direction'] ?? '')));
+	if ($dir === 'outbound' || $dir === 'local') {
+		return skykin_outbound_fail_label((string)($row['hangup_cause'] ?? ''));
+	}
+	if (!empty($row['_busy_rep']) || skykin_cdr_is_agent_busy_leg($row)) {
+		return 'Agent Busy';
+	}
+	if (skykin_cdr_is_abandoned_row($row)) {
+		return 'Abandoned';
+	}
+	if (!empty($row['_hunt_rep'])) {
+		// Collapsed hunt with no talk time = hard miss (reject / cancel).
+		return 'Missed';
+	}
+	if (skykin_cdr_is_hunt_leg($row)) {
+		return 'Hunt leg';
+	}
+	return 'Missed';
+}
+
+/** SQL CASE for CDR result column ($lowercase for API badges). */
+function skykin_cdr_result_sql(bool $lowercase = false): string {
+	$answered = $lowercase ? 'answered' : 'Answered';
+	$abandoned = $lowercase ? 'abandoned' : 'Abandoned';
+	$busy = $lowercase ? 'busy' : 'Busy';
+	$declined = $lowercase ? 'declined' : 'Declined';
+	$noAnswer = $lowercase ? 'no answer' : 'No answer';
+	$switched = $lowercase ? 'switched off' : 'Switched off';
+	$notInSvc = $lowercase ? 'number not in service' : 'Number not in service';
+	$network = $lowercase ? 'network unavailable' : 'Network unavailable';
+	$cancelled = $lowercase ? 'call cancelled' : 'Call cancelled';
+	$ended = $lowercase ? 'call ended' : 'Call ended';
+	$failed = $lowercase ? 'failed' : 'Failed';
+	$missed = $lowercase ? 'missed' : 'Missed';
+	$hunt = $lowercase ? 'hunt leg' : 'Hunt leg';
+	$agent = skykin_cdr_agent_bridge_sql();
+	$outDir = "LOWER(COALESCE(direction, '')) IN ('outbound', 'local')";
+	$cause = "UPPER(COALESCE(hangup_cause, ''))";
+	return "CASE
+		WHEN billsec > 0 AND {$outDir} THEN '{$answered}'
+		WHEN billsec > 0 AND {$agent} THEN '{$answered}'
+		WHEN billsec > 0 AND LOWER(COALESCE(direction, '')) = 'inbound' THEN '{$abandoned}'
+		WHEN {$outDir} AND {$cause} = 'USER_BUSY' THEN '{$busy}'
+		WHEN {$outDir} AND {$cause} = 'CALL_REJECTED' THEN '{$declined}'
+		WHEN {$outDir} AND {$cause} IN ('NORMAL_TEMPORARY_FAILURE','DESTINATION_OUT_OF_ORDER','ALLOTTED_TIMEOUT','NO_RESPONSE','NO_USER_RESPONSE','NO_ANSWER') THEN '{$noAnswer}'
+		WHEN {$outDir} AND {$cause} IN ('SUBSCRIBER_ABSENT','USER_NOT_REGISTERED') THEN '{$switched}'
+		WHEN {$outDir} AND {$cause} IN ('UNALLOCATED_NUMBER','NO_ROUTE_DESTINATION','INVALID_NUMBER_FORMAT') THEN '{$notInSvc}'
+		WHEN {$outDir} AND {$cause} = 'NETWORK_OUT_OF_ORDER' THEN '{$network}'
+		WHEN {$outDir} AND {$cause} = 'ORIGINATOR_CANCEL' THEN '{$cancelled}'
+		WHEN {$outDir} AND {$cause} = 'NORMAL_CLEARING' THEN '{$ended}'
+		WHEN {$outDir} THEN '{$failed}'
+		WHEN " . skykin_cdr_hunt_leg_sql() . " THEN '{$hunt}'
+		ELSE '{$missed}'
+	END";
+}
+
+function skykin_config(): array {
+	static $cfg = null;
+	if ($cfg !== null) {
+		return $cfg;
+	}
+
+	$host = skykin_http_host();
+	$cfg = [
+		'domain'              => skykin_default_domain(),
+		'http_host'           => $host,
+		'sip_server'          => $host,
+		'ahununu_url'         => 'https://ahununu.com/',
+		// Empty = use FusionPBX recordings only (recommended for cloud).
+		'recordings_api_base' => '',
+		// Empty = do not open a Socket.IO connection.
+		'socket_io_url'       => '',
+		'sms_enabled'         => true,
+		'wss_path'            => '/wss/',
+		'seed_demo_data'      => false,
+		'timezone'            => skykin_timezone(),
+	];
+
+	foreach ([
+		'/etc/skykin/config.php',
+		__DIR__ . '/skykin_local_config.php',
+	] as $override) {
+		if (is_file($override)) {
+			$extra = include $override;
+			if (is_array($extra)) {
+				$cfg = array_merge($cfg, $extra);
+			}
+		}
+	}
+
+	$map = [
+		'SKYKIN_AHUNUNU_URL'     => 'ahununu_url',
+		'SKYKIN_RECORDINGS_API'  => 'recordings_api_base',
+		'SKYKIN_SOCKET_IO_URL'   => 'socket_io_url',
+		'SKYKIN_SIP_SERVER'      => 'sip_server',
+		'SKYKIN_WSS_PATH'        => 'wss_path',
+		'SKYKIN_TZ'              => 'timezone',
+	];
+	foreach ($map as $env => $key) {
+		$val = getenv($env);
+		if ($val !== false && $val !== '') {
+			$cfg[$key] = $val;
+		}
+	}
+	$seed = getenv('SKYKIN_SEED_DEMO_DATA');
+	if ($seed !== false) {
+		$cfg['seed_demo_data'] = in_array(strtolower((string)$seed), ['1', 'true', 'yes'], true);
+	}
+
+	return $cfg;
+}
+
+/**
+ * FusionPBX PostgreSQL connection — reads from resources/config.php.
+ *
+ * FIX (2026-08-07): Previously read from /etc/fusionpbx/config.conf which
+ * only exists on the Linux VM, not on Windows/WSL dev machines. This caused
+ * a silent fallback to SQLite, meaning the Agent Dashboard wrote tickets to
+ * a local SQLite file while the Department Ticket Portal read from the real
+ * PostgreSQL database — tickets were invisible across apps.
+ *
+ * Now reads credentials from resources/config.php (the same file the ticket
+ * portal uses) and throws a visible RuntimeException if the connection fails,
+ * rather than silently returning null (which triggered the SQLite fallback).
+ */
+function skykin_pdo_fusionpbx(): PDO {
+	static $db = null;
+	if ($db !== null) return $db;
+
+	$h  = getenv('DB_HOST') ?: 'db';
+	$p  = getenv('DB_PORT') ?: '5432';
+	$n  = getenv('DB_NAME') ?: 'fusionpbx';
+	$u  = getenv('DB_USER') ?: 'fusionpbx';
+	$pw = getenv('DB_PASSWORD') !== false ? (string)getenv('DB_PASSWORD') : '';
+
+	$conf = '/etc/fusionpbx/config.conf';
+	if (is_file($conf)) {
+		foreach (file($conf) as $line) {
+			$line = trim($line);
+			if ($line === '' || $line[0] === '#') {
+				continue;
+			}
+			if (strpos($line, '=') === false) {
+				continue;
+			}
+			[$k, $v] = array_map('trim', explode('=', $line, 2));
+			if ($k === 'database.0.host') {
+				$h = $v;
+			}
+			if ($k === 'database.0.port') {
+				$p = $v;
+			}
+			if ($k === 'database.0.name') {
+				$n = $v;
+			}
+			if ($k === 'database.0.username') {
+				$u = $v;
+			}
+			if ($k === 'database.0.password') {
+				$pw = $v;
+			}
+		}
+	} else {
+		$fpbxConfig = dirname(__DIR__, 2) . '/resources/config.php';
+		if (is_file($fpbxConfig)) {
+			@include $fpbxConfig;
+			if (!empty($db_host)) {
+				$h = $db_host;
+			}
+			if (!empty($db_port)) {
+				$p = $db_port;
+			}
+			if (!empty($db_name)) {
+				$n = $db_name;
+			}
+			if (!empty($db_username)) {
+				$u = $db_username;
+			}
+			if (isset($db_password)) {
+				$pw = $db_password;
+			}
+		}
+	}
+
+	// ── Single direct connection attempt ─────────────────────────────────────
+	try {
+		$db = new PDO(
+			"pgsql:host={$h};port={$p};dbname={$n};connect_timeout=5",
+			$u, $pw,
+			[PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]
+		);
+		return $db;
+	} catch (Exception $e) {
+		// LOUD failure — do NOT silently fall back to a different database.
+		// A hidden SQLite fallback caused tickets to be written to the wrong
+		// database and disappear from the ticket portal entirely.
+		throw new RuntimeException(
+			"[SkyKin DB] Cannot connect to PostgreSQL at {$h}:{$p}/{$n}. " .
+			"Check resources/config.php credentials. Original error: " .
+			$e->getMessage()
+		);
+	}
+}
+
+/**
+ * Event Socket settings.
+ *
+ * FreeSWITCH's own event_socket.conf.xml is authoritative when FreeSWITCH runs
+ * on this host, so a fresh install needs no hand-written config. .env and
+ * ESL_* environment variables override it for remote/dev setups.
+ *
+ * A stale ESL_HOST pointing at a dev LAN address silently breaks every agent
+ * status change, so an unreachable host falls back to the local socket.
+ */
+function skykin_esl_settings(): array {
+	static $s = null;
+	if ($s !== null) {
+		return $s;
+	}
+
+	$s = ['host' => '127.0.0.1', 'port' => 8021, 'password' => 'ClueCon'];
+
+	$conf = '/etc/freeswitch/autoload_configs/event_socket.conf.xml';
+	if (is_file($conf) && is_readable($conf)) {
+		$xml = (string)file_get_contents($conf);
+		if (preg_match('/name="listen-ip"\s+value="([^"]*)"/', $xml, $m) && $m[1] !== '') {
+			$s['host'] = ($m[1] === '::' || $m[1] === '0.0.0.0') ? '127.0.0.1' : $m[1];
+		}
+		if (preg_match('/name="listen-port"\s+value="([^"]*)"/', $xml, $m) && $m[1] !== '') {
+			$s['port'] = (int)$m[1];
+		}
+		if (preg_match('/name="password"\s+value="([^"]*)"/', $xml, $m) && $m[1] !== '') {
+			$s['password'] = $m[1];
+		}
+	}
+
+	foreach ([
+		__DIR__ . '/../../.env',
+		__DIR__ . '/../.env',
+		__DIR__ . '/.env',
+	] as $envPath) {
+		if (!is_file($envPath)) {
+			continue;
+		}
+		foreach (file($envPath, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) as $ln) {
+			$ln = trim($ln);
+			if ($ln === '' || $ln[0] === '#' || strpos($ln, '=') === false) {
+				continue;
+			}
+			[$k, $v] = explode('=', $ln, 2);
+			$k = trim($k);
+			$v = trim($v, " \t\n\r\0\x0B\"'");
+			if ($v === '') {
+				continue;
+			}
+			if ($k === 'ESL_HOST') {
+				$s['host'] = $v;
+			} elseif ($k === 'ESL_PORT') {
+				$s['port'] = (int)$v;
+			} elseif ($k === 'ESL_PASSWORD') {
+				$s['password'] = $v;
+			}
+		}
+		break;
+	}
+
+	foreach (['ESL_HOST' => 'host', 'ESL_PORT' => 'port', 'ESL_PASSWORD' => 'password'] as $env => $key) {
+		$v = getenv($env);
+		if ($v !== false && $v !== '') {
+			$s[$key] = ($key === 'port') ? (int)$v : $v;
+		}
+	}
+
+	return $s;
+}
+
+/**
+ * Connected event_socket, or null. $error receives the reason on failure.
+ */
+function skykin_esl(?string &$error = null) {
+	$error = '';
+	if (!class_exists('config')) {
+		require_once __DIR__ . '/../../resources/classes/config.php';
+	}
+	if (!class_exists('event_socket')) {
+		require_once __DIR__ . '/../../resources/classes/event_socket.php';
+	}
+
+	$s = skykin_esl_settings();
+	$targets = [[$s['host'], $s['port']]];
+	if ($s['host'] !== '127.0.0.1') {
+		$targets[] = ['127.0.0.1', $s['port']];
+	}
+
+	foreach ($targets as [$host, $port]) {
+		try {
+			$esl = new event_socket();
+			if ($esl->connect($host, $port, $s['password'])) {
+				return $esl;
+			}
+			$error = 'ESL connect refused by ' . $host . ':' . $port;
+		} catch (Throwable $ex) {
+			$error = $ex->getMessage();
+		}
+	}
+	return null;
+}
+
+/**
+ * Run a FreeSWITCH API command and return its raw output ('' on failure).
+ *
+ * Prefer ESL over shelling out to fs_cli: in the Docker deployment FreeSWITCH
+ * lives in its own container, so the binary simply does not exist next to PHP
+ * and every shell_exec("fs_cli ...") returns null. That turns silently into
+ * "no agents / no registrations / no active calls" on the supervisor board and
+ * makes call monitoring fail as if the agent were idle. ESL reaches FreeSWITCH
+ * over the network, so it works both containerised and on a single host, with
+ * fs_cli kept only as a fallback for installs where ESL is locked down.
+ *
+ * The connection is reused across calls: a dashboard refresh issues several
+ * commands and each connect/auth round trip costs a socket and ~ms of latency.
+ */
+function skykin_fs_api(string $command): string {
+	static $esl = null;
+	static $tried = false;
+
+	$command = trim($command);
+	if ($command === '') {
+		return '';
+	}
+
+	if (!$tried) {
+		$tried = true;
+		$esl = skykin_esl($ignored_error);
+	}
+
+	if ($esl) {
+		try {
+			$res = $esl->request('api ' . $command);
+			if (is_array($res)) {
+				// event_socket returns the body under '$' and headers alongside it.
+				return (string)($res['$'] ?? implode(' | ', array_filter($res, 'is_scalar')));
+			}
+			return (string)$res;
+		} catch (Throwable $ignored) {
+			// Fall through to fs_cli below; a dropped socket should not be fatal.
+			$esl = null;
+		}
+	}
+
+	static $fs_cli = null;
+	if ($fs_cli === null) {
+		$fs_cli = '';
+		if (function_exists('shell_exec')) {
+			foreach (['/usr/bin/fs_cli', '/usr/local/bin/fs_cli', '/usr/local/freeswitch/bin/fs_cli'] as $p) {
+				if (is_executable($p)) {
+					$fs_cli = $p;
+					break;
+				}
+			}
+		}
+	}
+	if ($fs_cli !== '') {
+		return (string)shell_exec($fs_cli . ' -x ' . escapeshellarg($command) . ' 2>/dev/null');
+	}
+
+	return '';
+}
+
+/**
+ * Make sure mod_callcenter knows an agent, creating it if necessary.
+ *
+ * mod_callcenter's agent list is built from callcenter.conf.xml when FreeSWITCH
+ * starts, so an agent added to FusionPBX afterwards does not exist as far as
+ * FreeSWITCH is concerned and "callcenter_config agent set status" answers
+ * "-ERR Agent not found!". mod_callcenter can be provisioned at runtime, so
+ * create the agent, its contact and its queue membership on demand instead of
+ * requiring a restart.
+ *
+ * Every command is idempotent: "already exists" replies are expected and ignored.
+ * $agent is the name mod_callcenter knows the agent by, which the dashboards set
+ * to the FusionPBX call_center_agent_uuid.
+ */
+function skykin_cc_ensure_agent(string $agent, string $extension, string $domain, array $queues = []): bool {
+	if ($agent === '' || $extension === '' || $domain === '') {
+		return false;
+	}
+
+	skykin_fs_api('callcenter_config agent add ' . $agent . ' callback');
+	// Keep this contact identical to the live ringing originate. Do not put
+	// api_hangup_hook here: a space in that value breaks the agent ring.
+	// Decline is attached on the inbound DID via cc_export_vars instead.
+	$rtp_ip = skykin_rtp_advertise_ip();
+	skykin_fs_api('callcenter_config agent set contact ' . $agent
+		. " '{ignore_early_media=true,bridge_early_media=false,originate_timeout=45}[leg_timeout=30,media_webrtc=true,rtp_secure_media=optional,rtp_advertise_ip="
+		. $rtp_ip . ",include_external_ip=true]user/"
+		. $extension . '@' . $domain . "'");
+	skykin_fs_api('callcenter_config agent set max_no_answer ' . $agent . ' 999');
+	skykin_fs_api('callcenter_config agent set wrap_up_time ' . $agent . ' 0');
+	skykin_fs_api('callcenter_config agent set ready_time ' . $agent . ' 0');
+	// Stop Decline from re-ringing the same agent instantly (reject_delay 0
+	// plus max-wait-time 0 made the inbound call never end).
+	skykin_fs_api('callcenter_config agent set reject_delay_time ' . $agent . ' 15');
+	skykin_fs_api('callcenter_config agent set busy_delay_time ' . $agent . ' 15');
+
+	if (!$queues) {
+		$queues = [getenv('FS_QUEUE_EXT') ?: '8000'];
+	}
+	foreach ($queues as $queue) {
+		$queue = trim((string)$queue);
+		if ($queue === '') {
+			continue;
+		}
+		if (strpos($queue, '@') === false) {
+			$queue .= '@' . $domain;
+		}
+		// New FusionPBX domains must not require .env / container recreate.
+		skykin_fs_api('callcenter_config queue load ' . $queue);
+		skykin_fs_api('callcenter_config tier add ' . $queue . ' ' . $agent . ' 1 1');
+	}
+
+	// Confirm rather than trusting the replies: "add" reports an error both when the
+	// agent already existed and when the name was rejected.
+	$list = skykin_fs_api('callcenter_config agent list');
+	return $list !== '' && strpos($list, $agent) !== false;
+}
+
+/**
+ * Extensions currently registered to FreeSWITCH, as [extension => true].
+ *
+ * "show registrations" reads the core database, which is unavailable whenever
+ * FreeSWITCH runs with -nosql and returns "-ERR SQL disabled". Sofia keeps its
+ * own registration state in memory, so fall back to the profile listing: that
+ * keeps the dashboards' online/offline column honest either way.
+ */
+function skykin_fs_registrations(string $domain = '', string $profile = 'internal'): array {
+	$registered = [];
+
+	$json = json_decode(skykin_fs_api('show registrations as json'), true);
+	foreach ((is_array($json) ? ($json['rows'] ?? []) : []) as $row) {
+		$user  = trim((string)($row['reg_user'] ?? $row['user'] ?? ''));
+		$realm = trim((string)($row['realm'] ?? ''));
+		if ($user !== '' && ($domain === '' || $realm === '' || strcasecmp($realm, $domain) === 0)) {
+			$registered[$user] = true;
+		}
+	}
+	if ($registered) {
+		return $registered;
+	}
+
+	// Profile listing prints stanzas of "User:\t<ext>@<realm>" then "Status:\t...".
+	$out = skykin_fs_api('sofia status profile ' . $profile . ' reg');
+	$pending = null;
+	foreach (preg_split("/\r\n|\n|\r/", $out) ?: [] as $line) {
+		$line = trim($line);
+		if (stripos($line, 'User:') === 0) {
+			$who = trim(substr($line, 5));
+			$pending = null;
+			if (strpos($who, '@') !== false) {
+				[$user, $realm] = explode('@', $who, 2);
+				$user  = trim($user);
+				$realm = trim($realm);
+				if ($user !== '' && ($domain === '' || strcasecmp($realm, $domain) === 0)) {
+					$pending = $user;
+				}
+			}
+		} elseif ($pending !== null && stripos($line, 'Status:') === 0) {
+			if (stripos($line, 'Registered') !== false) {
+				$registered[$pending] = true;
+			}
+			$pending = null;
+		}
+	}
+
+	return $registered;
+}
+
+/**
+ * Whether a FreeSWITCH channel belongs to this dashboard tenant.
+ * Public inbound is always context=public; classify 755/756 vs 757-759 by dest.
+ */
+function skykin_channel_for_domain(array $row, string $domain, string $dest_digits = ''): bool {
+	$domain = strtolower(trim($domain));
+	$want_ahununu = ($domain === 'ahununu');
+	$ctx = strtolower((string)($row['context'] ?? ''));
+	$presence = strtolower((string)($row['presence_id'] ?? '') . ' ' . (string)($row['name'] ?? ''));
+	if ($dest_digits === '') {
+		$dest_digits = preg_replace('/\D+/', '', (string)($row['dest'] ?? '')) ?? '';
+	}
+	$is_ahununu_did = (bool)preg_match('/11113875[789]$/', $dest_digits)
+		|| (bool)preg_match('/11619803[5-9]$/', $dest_digits);
+	$is_client1_did = (bool)preg_match('/11113875[56]$/', $dest_digits);
+	if ($is_ahununu_did) {
+		return $want_ahununu;
+	}
+	if ($is_client1_did) {
+		return !$want_ahununu;
+	}
+	if ($ctx === 'ahununu' || strpos($presence, '@ahununu') !== false) {
+		return $want_ahununu;
+	}
+	if (strpos($ctx, 'client1') !== false || strpos($presence, '@client1') !== false) {
+		return !$want_ahununu;
+	}
+	if ($ctx === 'public') {
+		return false;
+	}
+	return $ctx === $domain || strpos($presence, '@' . $domain) !== false;
+}
+
+/**
+ * Format a wait duration for the queue waiting-caller lists.
+ */
+function skykin_cc_wait_fmt(int $seconds): string {
+	$seconds = max(0, $seconds);
+	if ($seconds < 60) {
+		return $seconds . 's';
+	}
+	return ((int)floor($seconds / 60)) . 'm ' . ($seconds % 60) . 's';
+}
+
+/**
+ * Live callers waiting in mod_callcenter, plus inbound still ringing.
+ *
+ * Waiting customers live in FreeSWITCH, not Postgres. This is view-only:
+ * the dashboards list who is in line; longest-idle-agent still assigns the
+ * next call. $queue_exts is the queue numbers (e.g. 8000); 8000 is always
+ * included so a missing FusionPBX queue row does not hide the live line.
+ */
+function skykin_cc_waiting_callers(string $domain, array $queue_exts = []): array {
+	$now = time();
+	$seen = [];
+	$out = [];
+	$exts = [];
+	foreach ($queue_exts as $e) {
+		$e = trim((string)$e);
+		if ($e !== '' && preg_match('/^\d{3,8}$/', $e)) {
+			$exts[$e] = true;
+		}
+	}
+	$exts['8000'] = true;
+
+	$cell = static function (array $cols, array $header, string $key, string $alt = ''): string {
+		$i = $header[$key] ?? ($alt !== '' ? ($header[$alt] ?? null) : null);
+		if ($i === null || !isset($cols[$i])) {
+			return '';
+		}
+		return trim((string)$cols[$i]);
+	};
+
+	foreach (array_keys($exts) as $qext) {
+		$raw = skykin_fs_api('callcenter_config queue list members ' . $qext . '@' . $domain);
+		$header = null;
+		foreach (preg_split("/\r\n|\n|\r/", $raw) ?: [] as $line) {
+			$line = trim($line);
+			if ($line === '' || strncmp($line, '+OK', 3) === 0 || strncmp($line, '-ERR', 4) === 0) {
+				continue;
+			}
+			$cols = explode('|', $line);
+			if ($header === null) {
+				$joined = strtolower(implode('|', $cols));
+				if (strpos($joined, 'cid_number') !== false || strpos($joined, 'session_uuid') !== false) {
+					$header = [];
+					foreach ($cols as $i => $name) {
+						$header[strtolower(trim((string)$name))] = $i;
+					}
+					continue;
+				}
+				$header = [
+					'queue' => 0, 'name' => 1, 'session_uuid' => 2, 'cid_number' => 3,
+					'cid_name' => 4, 'system_epoch' => 5, 'joined_epoch' => 6,
+					'rejoined_epoch' => 7, 'bridge_epoch' => 8, 'abandoned_epoch' => 9,
+					'base_score' => 10, 'skill_score' => 11, 'serving_agent' => 12,
+					'serving_system' => 13, 'state' => 14,
+				];
+			}
+			$state = strtolower($cell($cols, $header, 'state'));
+			if ($state === '' || in_array($state, ['abandoned', 'answered'], true)) {
+				continue;
+			}
+			$uuid = $cell($cols, $header, 'session_uuid', 'uuid');
+			$joined = (int)$cell($cols, $header, 'joined_epoch', 'system_epoch');
+			$wait = max(0, $now - ($joined > 0 ? $joined : $now));
+			$cid = $cell($cols, $header, 'cid_number');
+			if ($uuid !== '') {
+				$seen[$uuid] = true;
+			}
+			$out[] = [
+				'number' => $cid !== '' ? $cid : 'Unknown',
+				'name' => $cell($cols, $header, 'cid_name'),
+				'queue' => $qext,
+				'state' => ($state === 'trying') ? 'Offering' : 'Waiting',
+				'wait_seconds' => $wait,
+				'wait_fmt' => skykin_cc_wait_fmt($wait),
+			];
+		}
+	}
+
+	// DID hunt rings + Lua local-music wait (not in mod_callcenter).
+	// skykin_inbound.lua sets skykin_queue_wait=true + hash skykin_qwait/<uuid>.
+	$hash_raw = skykin_fs_api('hash dump/skykin_qwait');
+	foreach (preg_split("/\r\n|\n|\r/", (string)$hash_raw) ?: [] as $hline) {
+		$hline = trim($hline);
+		if ($hline === '' || strncmp($hline, '+OK', 3) === 0 || strncmp($hline, '-ERR', 4) === 0) {
+			continue;
+		}
+		// Examples: "uuid: cid|domain|epoch" or "skykin_qwait/uuid=cid|domain|epoch"
+		$uuid = '';
+		$val = '';
+		if (preg_match('#(?:skykin_qwait/)?([0-9a-f-]{16,})[=:\s]+(.+)$#i', $hline, $hm)) {
+			$uuid = $hm[1];
+			$val = trim($hm[2]);
+		} else {
+			continue;
+		}
+		if ($uuid === '' || isset($seen[$uuid])) {
+			continue;
+		}
+		$parts = explode('|', $val);
+		$hash_cid = trim((string)($parts[0] ?? ''));
+		$hash_dom = strtolower(trim((string)($parts[1] ?? '')));
+		$joined = (int)($parts[2] ?? 0);
+		if ($hash_dom !== '' && $hash_dom !== strtolower($domain)) {
+			continue;
+		}
+		// Drop stale hash if channel is gone.
+		$alive = trim(skykin_fs_api('uuid_exists ' . $uuid));
+		if ($alive !== 'true' && strpos($alive, 'true') === false) {
+			skykin_fs_api('hash delete/skykin_qwait/' . $uuid);
+			continue;
+		}
+		$seen[$uuid] = true;
+		$wait = max(0, $now - ($joined > 0 ? $joined : $now));
+		$out[] = [
+			'number' => $hash_cid !== '' ? $hash_cid : 'Unknown',
+			'name' => '',
+			'queue' => '8000',
+			'state' => 'Waiting',
+			'wait_seconds' => $wait,
+			'wait_fmt' => skykin_cc_wait_fmt($wait),
+		];
+	}
+
+	$json = json_decode(skykin_fs_api('show channels as json'), true);
+	foreach ((is_array($json) ? ($json['rows'] ?? []) : []) as $row) {
+		if (!is_array($row)) {
+			continue;
+		}
+		$uuid = (string)($row['uuid'] ?? '');
+		if ($uuid !== '' && isset($seen[$uuid])) {
+			continue;
+		}
+		if (strtolower((string)($row['direction'] ?? '')) !== 'inbound') {
+			continue;
+		}
+		$callstate = strtoupper((string)($row['callstate'] ?? ''));
+		$pdata = strtolower((string)($row['presence_data'] ?? ''));
+		$lua_wait = (strpos($pdata, 'skykin_queue_wait') !== false);
+		$b_uuid = trim((string)($row['b_uuid'] ?? ''));
+		// Fallback: channel var (presence_data often omitted from JSON).
+		if (!$lua_wait && $uuid !== '' && $b_uuid === ''
+			&& in_array($callstate, ['ACTIVE', 'EARLY', 'RINGING', 'HELD'], true)) {
+			$gv = strtolower(trim(skykin_fs_api('uuid_getvar ' . $uuid . ' skykin_queue_wait')));
+			$lua_wait = ($gv === 'true' || $gv === '1');
+		}
+		$is_ring = in_array($callstate, ['RINGING', 'EARLY'], true);
+		$is_hold = $lua_wait && $b_uuid === ''
+			&& in_array($callstate, ['ACTIVE', 'EARLY', 'RINGING', 'HELD'], true);
+		if (!$is_ring && !$is_hold) {
+			continue;
+		}
+		$cid = trim((string)($row['cid_num'] ?? $row['cid_number'] ?? ''));
+		$dest = trim((string)($row['dest'] ?? ''));
+		$cid_digits = preg_replace('/\D+/', '', $cid);
+		$dest_digits = preg_replace('/\D+/', '', $dest);
+		if (preg_match('/^1\d{2}$/', (string)$cid_digits) && preg_match('/^1\d{2}$/', (string)$dest_digits)) {
+			continue;
+		}
+		if (!skykin_channel_for_domain($row, $domain, (string)$dest_digits)) {
+			continue;
+		}
+		$created = (int)($row['created_epoch'] ?? 0);
+		$wait = max(0, $now - ($created > 0 ? $created : $now));
+		$out[] = [
+			'number' => $cid !== '' ? $cid : 'Unknown',
+			'name' => (string)($row['cid_name'] ?? ''),
+			'queue' => $dest !== '' ? $dest : 'inbound',
+			'state' => $is_hold ? 'Waiting' : 'Ringing',
+			'wait_seconds' => $wait,
+			'wait_fmt' => skykin_cc_wait_fmt($wait),
+		];
+	}
+
+	// Ethio parallel DID hunt opens several inbound channels (035–039) for one
+	// customer. Show one waiting row per caller, prefer agent-offer over hunt leg.
+	$dedupe = [];
+	foreach ($out as $item) {
+		$digits = preg_replace('/\D+/', '', (string)($item['number'] ?? ''));
+		if (strlen($digits) >= 9) {
+			$digits = substr($digits, -9);
+		}
+		$key = $digits !== '' ? $digits : (string)($item['number'] ?? 'unknown');
+		if (!isset($dedupe[$key])) {
+			$dedupe[$key] = $item;
+			continue;
+		}
+		$rank = static function (array $it): int {
+			$st = (string)($it['state'] ?? '');
+			if ($st === 'Offering') {
+				return 3;
+			}
+			if ($st === 'Waiting') {
+				return 2;
+			}
+			return 1;
+		};
+		$prev = $dedupe[$key];
+		if ($rank($item) > $rank($prev)
+			|| ($rank($item) === $rank($prev) && (int)$item['wait_seconds'] > (int)$prev['wait_seconds'])) {
+			$dedupe[$key] = $item;
+		}
+	}
+	$out = array_values($dedupe);
+
+	usort($out, static function ($a, $b) {
+		return ((int)$b['wait_seconds'] <=> (int)$a['wait_seconds']);
+	});
+	return $out;
+}
+
+/**
+ * Absolute path of a recording, or '' when it cannot be found.
+ *
+ * $dir is the CDR's record_path when known; the remaining candidates cover
+ * softphone uploads, the legacy flat root and the FusionPBX archive tree. Shared
+ * with play_recording.php so the Recordings tab never offers a file the streamer
+ * would answer 404 for. Nothing outside the recordings root is ever returned.
+ */
+function skykin_recording_path(string $file, string $domain, string $dir = ''): string {
+	$root = '/var/lib/freeswitch/recordings';
+	$file = basename($file);
+	if ($file === '' || !preg_match('/^[\w.\-]+$/', $file)) {
+		return '';
+	}
+
+	$candidates = [];
+	if ($dir !== '') {
+		$candidates[] = rtrim($dir, '/') . '/' . $file;
+	}
+	$candidates[] = $root . '/' . $domain . '/agent/' . $file;
+	$candidates[] = $root . '/' . $domain . '/' . $file;
+	$candidates[] = $root . '/' . $file;
+
+	foreach ($candidates as $candidate) {
+		$real = realpath($candidate);
+		if ($real !== false && is_file($real) && strpos($real, $root . '/') === 0) {
+			return $real;
+		}
+	}
+
+	// Archive recordings are nested by year/month/day, so search as a last resort.
+	$archive = $root . '/' . $domain . '/archive';
+	if (is_dir($archive)) {
+		try {
+			$it = new RecursiveIteratorIterator(
+				new RecursiveDirectoryIterator($archive, FilesystemIterator::SKIP_DOTS)
+			);
+			foreach ($it as $entry) {
+				if ($entry->isFile() && $entry->getFilename() === $file) {
+					return (string)$entry->getRealPath();
+				}
+			}
+		} catch (Throwable $ignored) {
+			// Unreadable subdirectory: treat as not found.
+		}
+	}
+
+	return '';
+}
+
+/**
+ * True when a recording actually contains audio a browser can play.
+ *
+ * FreeSWITCH opens the WAV as soon as record_session runs, so a call whose media
+ * never carried any frames leaves a bare 44-byte header behind. Those files load
+ * fine but stay silent with a zero duration, which reads as "the recording does
+ * not play", so the dashboards leave them out of the list.
+ */
+function skykin_recording_playable(string $path): bool {
+	if ($path === '' || !is_file($path) || !is_readable($path)) {
+		return false;
+	}
+	$size = (int)filesize($path);
+	if (strtolower((string)pathinfo($path, PATHINFO_EXTENSION)) !== 'wav') {
+		// Browser uploads are compressed; size is the only cheap signal.
+		return $size > 1024;
+	}
+
+	$fh = @fopen($path, 'rb');
+	if (!$fh) {
+		return false;
+	}
+	$head = (string)fread($fh, 4096);
+	fclose($fh);
+	if (substr($head, 0, 4) !== 'RIFF' || substr($head, 8, 4) !== 'WAVE') {
+		return false;
+	}
+	$pos = strpos($head, 'data');
+	if ($pos === false) {
+		return false;
+	}
+	$channels = (int)(@unpack('v', substr($head, 22, 2))[1] ?? 0);
+	$rate     = (int)(@unpack('V', substr($head, 24, 4))[1] ?? 0);
+	$declared = (int)(@unpack('V', substr($head, $pos + 4, 4))[1] ?? 0);
+	if ($channels < 1 || $rate < 1) {
+		return false;
+	}
+	// The data length is written when the file is closed, so a recording still in
+	// progress (or interrupted) reports 0 while samples are already on disk.
+	$bytes = max($declared, $size - ($pos + 8));
+
+	return ($bytes / ($rate * $channels * 2)) >= 0.5;
+}
+
+/**
+ * Stamp record_path/record_name on CDR rows from archive/${uuid}.wav files.
+ */
+function skykin_link_archive_recordings(PDO $db, string $domain, int $ts, int $te): void {
+	$root = '/var/lib/freeswitch/recordings/' . $domain . '/archive';
+	if (!is_dir($root)) {
+		return;
+	}
+	$stmt = null;
+	for ($day = strtotime('midnight', $ts); $day !== false && $day <= $te; $day = strtotime('+1 day', $day)) {
+		$dir = $root . '/' . date('Y/M/d', $day);
+		foreach (glob($dir . '/*.wav') ?: [] as $path) {
+			$uuid = pathinfo($path, PATHINFO_FILENAME);
+			if (!preg_match('/^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i', $uuid)) {
+				continue;
+			}
+			if ($stmt === null) {
+				$stmt = $db->prepare(
+					"UPDATE v_xml_cdr SET record_path = :path, record_name = :name
+					 WHERE xml_cdr_uuid = :uuid
+					   AND (record_name IS NULL OR record_name = '')"
+				);
+			}
+			$stmt->execute([':path' => $dir, ':name' => basename($path), ':uuid' => $uuid]);
+		}
+	}
+}
+
+/**
+ * Where dashboard diagnostics are written.
+ */
+function skykin_log_path(string $name): string {
+	$dir = '/var/log/skykin';
+	if (is_dir($dir) && is_writable($dir)) {
+		return $dir . '/' . $name;
+	}
+	return sys_get_temp_dir() . '/skykin_' . $name;
+}
+
+function skykin_ensure_settings_table(PDO $db): void {
+	$db->exec("CREATE TABLE IF NOT EXISTS skykin_settings (
+		setting_key VARCHAR(64) PRIMARY KEY,
+		setting_value TEXT NOT NULL,
+		updated_at TIMESTAMP DEFAULT NOW(),
+		updated_by VARCHAR(255)
+	)");
+}
+
+function skykin_setting_get(string $key, string $default = ''): string {
+	static $cache = [];
+	if (array_key_exists($key, $cache)) {
+		return $cache[$key];
+	}
+	try {
+		$db = skykin_pdo_fusionpbx();
+		skykin_ensure_settings_table($db);
+		$s = $db->prepare('SELECT setting_value FROM skykin_settings WHERE setting_key = :k');
+		$s->execute([':k' => $key]);
+		$v = $s->fetchColumn();
+		$cache[$key] = ($v === false) ? $default : (string) $v;
+	} catch (Throwable $e) {
+		$cache[$key] = $default;
+	}
+	return $cache[$key];
+}
+
+function skykin_setting_set(string $key, string $value, string $by = ''): void {
+	$db = skykin_pdo_fusionpbx();
+	skykin_ensure_settings_table($db);
+	$s = $db->prepare(
+		"INSERT INTO skykin_settings (setting_key, setting_value, updated_at, updated_by)
+		 VALUES (:k, :v, NOW(), :by)
+		 ON CONFLICT (setting_key) DO UPDATE
+		 SET setting_value = EXCLUDED.setting_value,
+		     updated_at = NOW(),
+		     updated_by = EXCLUDED.updated_by"
+	);
+	$s->execute([':k' => $key, ':v' => $value, ':by' => $by]);
+}
+
+/** Minutes of no mouse/keyboard/call before logout. 0 = disabled. */
+function skykin_idle_timeout_minutes(): int {
+	$n = (int) skykin_setting_get('session_idle_minutes', '30');
+	if ($n < 0) {
+		$n = 0;
+	}
+	if ($n > 1440) {
+		$n = 1440;
+	}
+	return $n;
+}
+
+function skykin_session_clear_auth(): void {
+	$_SESSION['authorized'] = false;
+	unset($_SESSION['user_uuid'], $_SESSION['authorized'], $_SESSION['user']);
+}
+
+function skykin_session_enforce_idle(): void {
+	if (empty($_SESSION['authorized']) && empty($_SESSION['user_uuid'])) {
+		return;
+	}
+	$minutes = skykin_idle_timeout_minutes();
+	if ($minutes <= 0) {
+		return;
+	}
+	$last = (int) ($_SESSION['session']['last_activity'] ?? 0);
+	if ($last <= 0) {
+		$_SESSION['session']['last_activity'] = time();
+		return;
+	}
+	if ((time() - $last) > ($minutes * 60)) {
+		skykin_session_clear_auth();
+	}
+}
+
+function skykin_session_touch(): void {
+	if (empty($_SESSION['authorized']) && empty($_SESSION['user_uuid'])) {
+		return;
+	}
+	$_SESSION['session']['last_activity'] = time();
+}
+
+/**
+ * Emit window.SKYKIN = {...} for dashboard JS.
+ */
+function skykin_js_bootstrap(): string {
+	$c = skykin_config();
+	$payload = [
+		'domain'              => $c['domain'],
+		'httpHost'            => $c['http_host'],
+		'sipServer'           => $c['sip_server'],
+		'ahununuUrl'          => $c['ahununu_url'],
+		'recordingsApiBase'   => rtrim((string)$c['recordings_api_base'], '/'),
+		'socketIoUrl'         => rtrim((string)$c['socket_io_url'], '/'),
+		'smsEnabled'          => !empty($c['sms_enabled']),
+		'wssPath'             => $c['wss_path'],
+		'idleTimeoutMinutes'  => skykin_idle_timeout_minutes(),
+		'idlePingUrl'         => 'session_ping.php',
+	];
+	return 'window.SKYKIN=' . json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS) . ';'
+		. skykin_js_dial_helpers();
+}
+
+/** Shared dial normalization for agent + supervisor dashboards. */
+function skykin_js_dial_helpers(): string {
+	return <<<'JS'
+window.skykinNormalizeEtDial=function(raw){
+  var s=String(raw||'').trim();
+  if(!s)return s;
+  if(/^2\d{2}$/.test(s)||/^1\d{2}$/.test(s))return s;
+  var d=s.replace(/\D/g,'');
+  if(!d)return s;
+  if(d.indexOf('00251')===0&&d.length>=12)d=d.slice(5);
+  else if(d.indexOf('251')===0&&d.length>=12)d=d.slice(3);
+  if(d.length===10&&d.charAt(0)==='0'){
+    if(/^09\d{8}$/.test(d))return d.slice(1);
+    return d;
+  }
+  if(d.length===9){
+    if(/^9\d{8}$/.test(d))return d;
+    if(/^[1-8]\d{8}$/.test(d))return '0'+d;
+  }
+  return d;
+};
+JS;
+}
+
+/**
+ * Flatten FusionPBX $_SESSION['groups'] to lowercase group name list.
+ */
+function skykin_user_groups(): array {
+	$raw = $_SESSION['groups'] ?? [];
+	$out = [];
+	array_walk_recursive($raw, function ($val) use (&$out) {
+		if (!is_string($val)) {
+			return;
+		}
+		foreach (array_map('trim', explode(',', $val)) as $g) {
+			if ($g !== '') {
+				$out[] = strtolower($g);
+			}
+		}
+	});
+	return array_values(array_unique($out));
+}
+
+function skykin_user_in_groups(array $allowed): bool {
+	$allowed = array_map('strtolower', $allowed);
+	return !empty(array_intersect($allowed, skykin_user_groups()));
+}
+
+/**
+ * Require an authenticated FusionPBX session.
+ * @param bool $json  API-style JSON 401 instead of redirect
+ */
+function skykin_require_login(bool $json = false): void {
+	skykin_session_enforce_idle();
+	if (!empty($_SESSION['user_uuid']) && !empty($_SESSION['authorized'])) {
+		if (!$json) {
+			skykin_session_touch();
+		}
+		return;
+	}
+	if ($json) {
+		header('Content-Type: application/json');
+		http_response_code(401);
+		echo json_encode(['ok' => false, 'error' => 'Session expired', 'login' => '/']);
+		exit;
+	}
+	$path = $_SERVER['REQUEST_URI'] ?? '/';
+	header('Location: /?path=' . urlencode($path));
+	exit;
+}
+
+/**
+ * Require the current user to be in one of the allowed groups.
+ */
+function skykin_require_groups(array $allowed, bool $json = false): void {
+	skykin_require_login($json);
+	if (skykin_user_in_groups($allowed)) {
+		return;
+	}
+	if ($json) {
+		header('Content-Type: application/json');
+		http_response_code(403);
+		echo json_encode(['ok' => false, 'error' => 'Access denied']);
+		exit;
+	}
+	http_response_code(403);
+	echo '<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Access Denied – Sky Connect</title>' . skykin_favicon_tag() . '
+<style>body{font-family:Segoe UI,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;background:#f0f2f5;margin:0}
+.box{background:#fff;padding:40px 48px;border-radius:14px;text-align:center;box-shadow:0 4px 20px rgba(0,0,0,.1)}
+h2{color:#c62828;margin:0 0 10px}p{color:#666;font-size:14px}a{color:#0047AB}</style></head>
+<body><div class="box"><h2>Access Denied</h2><p>You do not have permission to open this page.</p>
+<p><a href="/app/agent_dashboard/index.php">Back to Agent Dashboard</a></p>
+<p style="margin-top:24px;font-size:11px;color:#aaa">Sky Connect | Powered by SkyKin Technology</p></div></body></html>';
+	exit;
+}
+
+date_default_timezone_set(skykin_timezone());
+
+/**
+ * Blacklist: Postgres (dashboard list) + FreeSWITCH file/hash (inbound drop).
+ * Line format: domain|digits|display|reason|agent|unix
+ * Hash keys are domain-scoped (`domain~digits`); lists are not shared across domains.
+ */
+if (is_file(__DIR__ . '/skykin_bl_sync.php')) {
+	require_once __DIR__ . '/skykin_bl_sync.php';
+}
+
+function skykin_blacklist_path(): string {
+	return '/etc/freeswitch/scripts/skykin_blacklist.txt';
+}
+
+function skykin_blacklist_digits(string $number): string {
+	$d = preg_replace('/\D+/', '', $number) ?? '';
+	if (strlen($d) >= 12 && substr($d, 0, 3) === '251') {
+		$d = substr($d, 3);
+	}
+	if (strlen($d) === 10 && $d !== '' && $d[0] === '0') {
+		$d = substr($d, 1);
+	}
+	return $d;
+}
+
+function skykin_blacklist_parse(string $text): array {
+	$rows = [];
+	foreach (preg_split("/\r\n|\n|\r/", $text) ?: [] as $line) {
+		$line = trim($line);
+		if ($line === '' || $line[0] === '#') {
+			continue;
+		}
+		$p = explode('|', $line);
+		$digits = skykin_blacklist_digits((string)($p[1] ?? $p[0] ?? ''));
+		if ($digits === '') {
+			continue;
+		}
+		$rows[] = [
+			'domain'  => $p[0] ?? '*',
+			'digits'  => $digits,
+			'display' => $p[2] ?? $digits,
+			'reason'  => $p[3] ?? '',
+			'agent'   => $p[4] ?? '',
+			'ts'      => (int)($p[5] ?? 0),
+		];
+	}
+	return $rows;
+}
+
+function skykin_blacklist_buf(array $rows): string {
+	$buf = "# domain|digits|display|reason|agent|unix\n";
+	foreach ($rows as $r) {
+		$digits = skykin_blacklist_digits((string)($r['digits'] ?? ''));
+		if ($digits === '') {
+			continue;
+		}
+		$buf .= implode('|', [
+			str_replace('|', '', (string)($r['domain'] ?? '*')),
+			$digits,
+			str_replace('|', '', (string)($r['display'] ?? $digits)),
+			str_replace('|', '', (string)($r['reason'] ?? '')),
+			str_replace('|', '', (string)($r['agent'] ?? '')),
+			(string)((int)($r['ts'] ?? time())),
+		]) . "\n";
+	}
+	return $buf;
+}
+
+function skykin_blacklist_db(): ?PDO {
+	if (!function_exists('skykin_pdo_fusionpbx')) {
+		return null;
+	}
+	try {
+		$db = skykin_pdo_fusionpbx();
+		if (function_exists('skykin_bl_ensure_table')) {
+			skykin_bl_ensure_table($db);
+		} else {
+			$db->exec("CREATE TABLE IF NOT EXISTS skykin_blacklist (
+				digits text NOT NULL,
+				domain_name text NOT NULL DEFAULT '*',
+				display text,
+				reason text,
+				agent text,
+				ts bigint
+			)");
+			try {
+				$db->exec('ALTER TABLE skykin_blacklist DROP CONSTRAINT IF EXISTS skykin_blacklist_pkey');
+				$db->exec('ALTER TABLE skykin_blacklist ADD PRIMARY KEY (digits, domain_name)');
+			} catch (Throwable $e) {
+			}
+		}
+		return $db;
+	} catch (Throwable $e) {
+		return null;
+	}
+}
+
+function skykin_blacklist_load(): array {
+	$by = [];
+	$add = static function (array $rows) use (&$by): void {
+		foreach ($rows as $r) {
+			$d = skykin_blacklist_digits((string)($r['digits'] ?? ''));
+			if ($d === '') {
+				continue;
+			}
+			$r['digits'] = $d;
+			$dom = (string)($r['domain'] ?? $r['domain_name'] ?? '*');
+			$r['domain'] = $dom;
+			$by[$dom . '|' . $d] = $r;
+		}
+	};
+	$db = skykin_blacklist_db();
+	if ($db) {
+		try {
+			$got = [];
+			foreach ($db->query('SELECT digits, domain_name, display, reason, agent, ts FROM skykin_blacklist ORDER BY ts DESC') as $r) {
+				$got[] = [
+					'domain'  => (string)$r['domain_name'],
+					'digits'  => (string)$r['digits'],
+					'display' => (string)($r['display'] ?: $r['digits']),
+					'reason'  => (string)$r['reason'],
+					'agent'   => (string)$r['agent'],
+					'ts'      => (int)$r['ts'],
+				];
+			}
+			$add($got);
+		} catch (Throwable $e) {
+		}
+	}
+	foreach ([
+		'/var/lib/freeswitch/recordings/skykin_blacklist.txt',
+		'/etc/freeswitch/scripts/skykin_blacklist.txt',
+	] as $path) {
+		if (is_readable($path)) {
+			$add(skykin_blacklist_parse((string)@file_get_contents($path)));
+		}
+	}
+	if (function_exists('skykin_fs_api')) {
+		$add(skykin_blacklist_parse((string)skykin_fs_api('system cat /etc/freeswitch/scripts/skykin_blacklist.txt')));
+		$add(skykin_blacklist_parse((string)skykin_fs_api('system cat /var/lib/freeswitch/recordings/skykin_blacklist.txt')));
+	}
+	return array_values($by);
+}
+
+function skykin_blacklist_save(array $rows): bool {
+	$old = skykin_blacklist_load();
+	$norm = [];
+	$seen = [];
+	foreach ($rows as $r) {
+		$digits = skykin_blacklist_digits((string)($r['digits'] ?? ''));
+		$dom = (string)($r['domain'] ?? $r['domain_name'] ?? '*');
+		if ($digits === '' || strlen($digits) < 7 || isset($seen[$dom . '|' . $digits])) {
+			continue;
+		}
+		$seen[$dom . '|' . $digits] = true;
+		$norm[] = [
+			'domain'  => $dom,
+			'digits'  => $digits,
+			'display' => (string)($r['display'] ?? $digits),
+			'reason'  => (string)($r['reason'] ?? ''),
+			'agent'   => (string)($r['agent'] ?? ''),
+			'ts'      => (int)($r['ts'] ?? time()),
+		];
+	}
+	// Clear FreeSWITCH hash for every number dropping out of the list (fix orphan keys).
+	if (function_exists('skykin_bl_hash_clear_number') || function_exists('skykin_bl_hash_scope')) {
+		$new_keys = [];
+		foreach ($norm as $r) {
+			$new_keys[strtolower($r['domain']) . '|' . $r['digits']] = true;
+		}
+		foreach ($old as $r) {
+			$dom = (string)($r['domain'] ?? $r['domain_name'] ?? '');
+			$dig = skykin_blacklist_digits((string)($r['digits'] ?? ''));
+			if ($dig === '' || isset($new_keys[strtolower($dom) . '|' . $dig])) {
+				continue;
+			}
+			if (function_exists('skykin_bl_hash_clear_number')) {
+				skykin_bl_hash_clear_number($dom, $dig);
+			} elseif (function_exists('skykin_bl_hash_scope')) {
+				skykin_bl_hash_scope($dom, $dig, false);
+			}
+		}
+	}
+	$db_ok = false;
+	$db = skykin_blacklist_db();
+	if ($db) {
+		try {
+			$db->beginTransaction();
+			$db->exec('DELETE FROM skykin_blacklist');
+			$st = $db->prepare('INSERT INTO skykin_blacklist (digits, domain_name, display, reason, agent, ts) VALUES (?,?,?,?,?,?)');
+			foreach ($norm as $r) {
+				$st->execute([$r['digits'], $r['domain'], $r['display'], $r['reason'], $r['agent'], $r['ts']]);
+			}
+			$db->commit();
+			$db_ok = true;
+		} catch (Throwable $e) {
+			if ($db->inTransaction()) {
+				$db->rollBack();
+			}
+		}
+	}
+	$buf = skykin_blacklist_buf($norm);
+	foreach ([
+		'/etc/freeswitch/scripts/skykin_blacklist.txt',
+		'/var/lib/freeswitch/recordings/skykin_blacklist.txt',
+	] as $path) {
+		@file_put_contents($path, $buf, LOCK_EX);
+		@chmod($path, 0666);
+	}
+	$file_ok = false;
+	if (function_exists('skykin_fs_api')) {
+		$b64 = base64_encode($buf);
+		foreach ([
+			'/etc/freeswitch/scripts/skykin_blacklist.txt',
+			'/var/lib/freeswitch/recordings/skykin_blacklist.txt',
+		] as $path) {
+			skykin_fs_api('system sh -c "printf %s ' . $b64 . ' | base64 -d > ' . $path . ' && chmod 666 ' . $path . '"');
+		}
+		$got = (string)skykin_fs_api('system cat /etc/freeswitch/scripts/skykin_blacklist.txt');
+		foreach ($norm as $r) {
+			if (strpos($got, $r['digits']) !== false) {
+				$file_ok = true;
+				break;
+			}
+		}
+		if (!$norm) {
+			$file_ok = true;
+		}
+		foreach ($norm as $r) {
+			$d = $r['digits'];
+			$dom = str_replace(['/', ' ', '|', '~'], '', (string)$r['domain']);
+			if (function_exists('skykin_bl_hash_scope')) {
+				skykin_bl_hash_scope($dom, $d, true);
+			} else {
+				skykin_fs_api('hash delete/skykin_bl/' . $d);
+				if ($dom !== '') {
+					skykin_fs_api('hash insert/skykin_bl/' . $dom . '~' . $d . '/1');
+					if (strlen($d) >= 9) {
+						skykin_fs_api('hash insert/skykin_bl/' . $dom . '~' . substr($d, -9) . '/1');
+					}
+				}
+			}
+		}
+		if (function_exists('skykin_bl_hash_prune_orphans')) {
+			skykin_bl_hash_prune_orphans($norm);
+		}
+	}
+	return $db_ok || $file_ok || ($norm && skykin_blacklist_match($norm[0]['digits'], (string)($norm[0]['domain'] ?? '')));
+}
+
+function skykin_blacklist_match(string $number, string $domain = ''): bool {
+	$want = skykin_blacklist_digits($number);
+	$domain = trim($domain);
+	if ($want === '' || strlen($want) < 7 || $domain === '') {
+		return false;
+	}
+	foreach (skykin_blacklist_load() as $r) {
+		$row_dom = (string)($r['domain'] ?? $r['domain_name'] ?? '');
+		if (strcasecmp($row_dom, $domain) !== 0) {
+			continue;
+		}
+		$have = skykin_blacklist_digits((string)($r['digits'] ?? ''));
+		if ($have === '') {
+			continue;
+		}
+		$n = min(strlen($want), strlen($have), 12);
+		if ($n >= 7 && substr($want, -$n) === substr($have, -$n)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+/** Track On Break sessions so supervisor can show break time (not only counts). */
+function skykin_break_ensure_table(PDO $db): void {
+	static $done = false;
+	if ($done) {
+		return;
+	}
+	$db->exec("CREATE TABLE IF NOT EXISTS skykin_break_sessions (
+		id SERIAL PRIMARY KEY,
+		domain VARCHAR(255) NOT NULL,
+		agent_ext VARCHAR(50) NOT NULL,
+		started_at TIMESTAMP NOT NULL DEFAULT NOW(),
+		ended_at TIMESTAMP NULL
+	)");
+	try {
+		$db->exec("CREATE INDEX IF NOT EXISTS skykin_break_sessions_dom_ext_started
+			ON skykin_break_sessions (domain, agent_ext, started_at)");
+	} catch (Throwable $e) { /* ignore */ }
+	$done = true;
+}
+
+/**
+ * Open/close a break session when CC status changes.
+ * On Break → open (if none open). Available / Logged Out → close open session.
+ */
+function skykin_break_on_status_change(PDO $db, string $domain, string $agent_ext, string $new_status): void {
+	$domain = trim($domain);
+	$agent_ext = trim($agent_ext);
+	if ($domain === '' || $agent_ext === '') {
+		return;
+	}
+	try {
+		skykin_break_ensure_table($db);
+		if ($new_status === 'On Break') {
+			$chk = $db->prepare("SELECT id FROM skykin_break_sessions
+				WHERE domain = :d AND agent_ext = :e AND ended_at IS NULL
+				ORDER BY id DESC LIMIT 1");
+			$chk->execute([':d' => $domain, ':e' => $agent_ext]);
+			if (!$chk->fetchColumn()) {
+				$ins = $db->prepare("INSERT INTO skykin_break_sessions (domain, agent_ext, started_at)
+					VALUES (:d, :e, NOW())");
+				$ins->execute([':d' => $domain, ':e' => $agent_ext]);
+			}
+			return;
+		}
+		if ($new_status === 'Available' || $new_status === 'Available (On Demand)' || $new_status === 'Logged Out') {
+			$upd = $db->prepare("UPDATE skykin_break_sessions
+				SET ended_at = NOW()
+				WHERE domain = :d AND agent_ext = :e AND ended_at IS NULL");
+			$upd->execute([':d' => $domain, ':e' => $agent_ext]);
+		}
+	} catch (Throwable $e) { /* never break status apply */ }
+}
+
+/**
+ * Per-ext break stats for today: count, total seconds (incl. open session), current open seconds.
+ * @return array<string, array{count:int,total_secs:int,current_secs:int}>
+ */
+function skykin_break_stats_today(PDO $db, string $domain): array {
+	$out = [];
+	try {
+		skykin_break_ensure_table($db);
+		$s = $db->prepare("SELECT agent_ext,
+				COUNT(*)::int AS break_count,
+				COALESCE(SUM(EXTRACT(EPOCH FROM (COALESCE(ended_at, NOW()) - started_at))), 0)::bigint AS total_secs,
+				COALESCE(SUM(CASE WHEN ended_at IS NULL
+					THEN EXTRACT(EPOCH FROM (NOW() - started_at)) ELSE 0 END), 0)::bigint AS current_secs
+			FROM skykin_break_sessions
+			WHERE domain = :d AND started_at >= date_trunc('day', NOW())
+			GROUP BY agent_ext");
+		$s->execute([':d' => $domain]);
+		foreach ($s->fetchAll(PDO::FETCH_ASSOC) as $r) {
+			$out[(string)$r['agent_ext']] = [
+				'count' => (int)$r['break_count'],
+				'total_secs' => max(0, (int)$r['total_secs']),
+				'current_secs' => max(0, (int)$r['current_secs']),
+			];
+		}
+	} catch (Throwable $e) {
+		return [];
+	}
+	return $out;
+}
+
+} // function_exists guard

@@ -1,0 +1,912 @@
+<?php
+/*
+	FusionPBX
+	Version: MPL 1.1
+
+	The contents of this file are subject to the Mozilla Public License Version
+	1.1 (the "License"); you may not use this file except in compliance with
+	the License. You may obtain a copy of the License at
+	http://www.mozilla.org/MPL/
+
+	Software distributed under the License is distributed on an "AS IS" basis,
+	WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
+	for the specific language governing rights and limitations under the
+	License.
+
+	The Original Code is FusionPBX
+
+	The Initial Developer of the Original Code is
+	Mark J Crane <markjcrane@fusionpbx.com>
+	Portions created by the Initial Developer are Copyright (C) 2008-2026
+	the Initial Developer. All Rights Reserved.
+
+	Contributor(s):
+	Mark J Crane <markjcrane@fusionpbx.com>
+*/
+
+//includes files
+	require_once dirname(__DIR__, 2) . "/resources/require.php";
+	require_once "resources/check_auth.php";
+
+//check permissions
+	if (!(permission_exists('gateway_add') || permission_exists('gateway_edit'))) {
+		echo "access denied";
+		exit;
+	}
+
+//add multi-lingual support
+	$language = new text;
+	$text = $language->get();
+
+//get order and order by, page
+	$order_by = preg_replace('#[^a-zA-Z0-9_\-]#', '', ($_REQUEST["order_by"] ?? ''));
+	$order = $_REQUEST["order"] ?? 'asc';
+	$page = isset($_REQUEST['page']) && is_numeric($_REQUEST['page']) ? $_REQUEST['page'] : 0;
+	$search = $_REQUEST['search'] ?? null;
+
+//action add or update
+	if (!empty($_REQUEST["id"])) {
+		$action = "update";
+		if (!empty($_POST["id"]) && is_uuid($_POST["id"])) {
+			$gateway_uuid = $_REQUEST["id"];
+		}
+		if (!empty($_POST["gateway_uuid"]) && is_uuid($_POST["gateway_uuid"])) {
+			$gateway_uuid = $_POST["gateway_uuid"];
+		}
+	}
+	else {
+		$action = "add";
+		$gateway_uuid = uuid();
+	}
+
+//get total gateway count from the database, check limit, if defined
+	if ($action == 'add' && $settings->get('limit', 'gateways') != '') {
+		$sql = "select count(gateway_uuid) from v_gateways ";
+		$sql .= "where (domain_uuid = :domain_uuid ".(permission_exists('gateway_domain') ? " or domain_uuid is null " : null).") ";
+		$parameters['domain_uuid'] = $_SESSION['domain_uuid'];
+		$total_gateways = $database->select($sql, $parameters, 'column');
+		unset($sql, $parameters);
+
+		if ($total_gateways >= $settings->get('limit', 'gateways')) {
+			message::add($text['message-maximum_gateways'].' '.$settings->get('limit', 'gateways'), 'negative');
+			header('Location: gateways.php?'.(!empty($order_by) ? '&order_by='.$order_by.'&order='.$order : null).(isset($page) && is_numeric($page) ? '&page='.$page : null).(!empty($search) ? '&search='.urlencode($search) : null));
+			exit;
+		}
+	}
+
+//get http post variables and set them to php variables
+	if (!empty($_POST)) {
+		$domain_uuid = $_POST["domain_uuid"];
+		$gateway = $_POST["gateway"];
+		$username = $_POST["username"];
+		$password = $_POST["password"];
+		$distinct_to = $_POST["distinct_to"];
+		$auth_username = $_POST["auth_username"];
+		$realm = $_POST["realm"];
+		$from_user = $_POST["from_user"];
+		$from_domain = $_POST["from_domain"];
+		$proxy = $_POST["proxy"];
+		$register_proxy = $_POST["register_proxy"];
+		$outbound_proxy = $_POST["outbound_proxy"];
+		$expire_seconds = $_POST["expire_seconds"];
+		$register = $_POST["register"];
+		$register_transport = $_POST["register_transport"];
+		$contact_params = $_POST["contact_params"];
+		$retry_seconds = $_POST["retry_seconds"];
+		$extension = $_POST["extension"];
+		$ping = $_POST["ping"];
+		$ping_min = $_POST["ping_min"];
+		$ping_max = $_POST["ping_max"];
+		$contact_in_ping = $_POST["contact_in_ping"];
+		$channels = $_POST["channels"];
+		$caller_id_in_from = $_POST["caller_id_in_from"];
+		$supress_cng = $_POST["supress_cng"];
+		$sip_cid_type = $_POST["sip_cid_type"];
+		$codec_prefs = $_POST["codec_prefs"];
+		$extension_in_contact = $_POST["extension_in_contact"];
+		$context = $_POST["context"];
+		$profile = $_POST["profile"];
+		$hostname = $_POST["hostname"];
+		$enabled = $_POST["enabled"];
+		$description = $_POST["description"];
+	}
+
+//prevent the domain_uuid from not being set by someone without this permission
+	if (!permission_exists('gateway_domain')) {
+		$domain_uuid = $_SESSION['domain_uuid'];
+	}
+
+//process the HTTP POST
+	if (!empty($_POST) && empty($_POST["persistformvar"])) {
+
+		//validate the token
+			$token = new token;
+			if (!$token->validate($_SERVER['PHP_SELF'])) {
+				message::add($text['message-invalid_token'],'negative');
+				header('Location: gateways.php?'.(!empty($order_by) ? '&order_by='.$order_by.'&order='.$order : null).(isset($page) && is_numeric($page) ? '&page='.$page : null).(!empty($search) ? '&search='.urlencode($search) : null));
+				exit;
+			}
+
+		//check for all required data
+			$msg = '';
+			if (empty($gateway)) { $msg .= $text['message-required']." ".$text['label-gateway']."<br>\n"; }
+
+			if (empty($proxy)) { $msg .= $text['message-required']." ".$text['label-proxy']."<br>\n"; }
+			if (empty($expire_seconds)) { $msg .= $text['message-required']." ".$text['label-expire_seconds']."<br>\n"; }
+			if (empty($register)) { $msg .= $text['message-required']." ".$text['label-register']."<br>\n"; }
+			if ($register === 'true') {
+				if (empty($username)) { $msg .= $text['message-required']." ".$text['label-username']."<br>\n"; }
+				if (empty($password)) { $msg .= $text['message-required']." ".$text['label-password']."<br>\n"; }
+			}
+			if (empty($retry_seconds)) { $msg .= $text['message-required']." ".$text['label-retry_seconds']."<br>\n"; }
+			if (empty($channels)) {
+				//$msg .= $text['message-required']." ".$text['label-channels']."<br>\n";
+				$channels = 0;
+			}
+			if (empty($context)) { $msg .= $text['message-required']." ".$text['label-context']."<br>\n"; }
+			if (empty($profile)) { $msg .= $text['message-required']." ".$text['label-profile']."<br>\n"; }
+			if (empty($enabled)) { $msg .= $text['message-required']." ".$text['label-enabled']."<br>\n"; }
+			if (!empty($msg) && empty($_POST["persistformvar"])) {
+				require_once "resources/header.php";
+				require_once "resources/persist_form_var.php";
+				echo "<div align='center'>\n";
+				echo "<table><tr><td>\n";
+				echo $msg."<br />";
+				echo "</td></tr></table>\n";
+				persistformvar($_POST);
+				echo "</div>\n";
+				require_once "resources/footer.php";
+				return;
+			}
+
+		//add or update the database
+			if (empty($_POST["persistformvar"]) || $_POST["persistformvar"] != "true") {
+
+				//build the gateway array
+					$x = 0;
+					$array['gateways'][$x]["domain_uuid"] = is_uuid($domain_uuid) ? $domain_uuid : null;
+					$array['gateways'][$x]["gateway_uuid"] = $gateway_uuid;
+					$array['gateways'][$x]["gateway"] = $gateway;
+					$array['gateways'][$x]["username"] = $username;
+					$array['gateways'][$x]["password"] = $password;
+					$array['gateways'][$x]["distinct_to"] = $distinct_to;
+					$array['gateways'][$x]["auth_username"] = $auth_username;
+					$array['gateways'][$x]["realm"] = $realm;
+					$array['gateways'][$x]["from_user"] = $from_user;
+					$array['gateways'][$x]["from_domain"] = $from_domain;
+					$array['gateways'][$x]["proxy"] = $proxy;
+					$array['gateways'][$x]["register_proxy"] = $register_proxy;
+					$array['gateways'][$x]["outbound_proxy"] = $outbound_proxy;
+					$array['gateways'][$x]["expire_seconds"] = $expire_seconds;
+					$array['gateways'][$x]["register"] = $register;
+					$array['gateways'][$x]["register_transport"] = $register_transport;
+					$array['gateways'][$x]["contact_params"] = $contact_params;
+					$array['gateways'][$x]["retry_seconds"] = $retry_seconds;
+					$array['gateways'][$x]["extension"] = $extension;
+					$array['gateways'][$x]["ping"] = $ping;
+					$array['gateways'][$x]["ping_min"] = $ping_min;
+					$array['gateways'][$x]["ping_max"] = $ping_max;
+					$array['gateways'][$x]["contact_in_ping"] = $contact_in_ping;
+					$array['gateways'][$x]["channels"] = $channels;
+					$array['gateways'][$x]["caller_id_in_from"] = $caller_id_in_from;
+					$array['gateways'][$x]["supress_cng"] = $supress_cng;
+					$array['gateways'][$x]["sip_cid_type"] = $sip_cid_type;
+					$array['gateways'][$x]["codec_prefs"] = $codec_prefs;
+					$array['gateways'][$x]["extension_in_contact"] = $extension_in_contact;
+					$array['gateways'][$x]["context"] = $context;
+					$array['gateways'][$x]["profile"] = $profile;
+					$array['gateways'][$x]["hostname"] = empty($hostname) ? null : $hostname;
+					$array['gateways'][$x]["enabled"] = $enabled;
+					$array['gateways'][$x]["description"] = $description;
+
+				//update gateway session variable
+					if ($enabled) {
+						$_SESSION['gateways'][$gateway_uuid] = $gateway;
+					}
+					else {
+						unset($_SESSION['gateways'][$gateway_uuid]);
+					}
+
+				//save to the data
+					if (is_uuid($gateway_uuid)) {
+						$database->uuid($gateway_uuid);
+					}
+					$database->save($array);
+					$message = $database->message;
+
+				//remove xml file (if any) if not enabled
+					if ($enabled != true && !empty($settings->get('switch', 'sip_profiles'))) {
+						$gateway_xml_file = $settings->get('switch', 'sip_profiles')."/".$profile."/v_".$gateway_uuid.".xml";
+						if (file_exists($gateway_xml_file)) {
+							unlink($gateway_xml_file);
+						}
+					}
+
+				//syncrhonize configuration
+					save_gateway_xml();
+
+				//clear the cache
+					$cache = new cache;
+					$cache->delete(gethostname().":configuration:sofia.conf");
+
+				//rescan the external profile to look for new or stopped gateways
+					//create the event socket connection
+						$esl = event_socket::create();
+						$response = event_socket::api('sofia profile external rescan');
+						usleep(1000);
+					//clear the apply settings reminder
+						$_SESSION["reload_xml"] = false;
+
+			}
+
+		//redirect the user
+			if (isset($action)) {
+				if ($action == "add") {
+					message::add($text['message-add']);
+				}
+				if ($action == "update") {
+					message::add($text['message-update']);
+				}
+				header("Location: gateways.php?".(!empty($order_by) ? '&order_by='.$order_by.'&order='.$order : null).(isset($page) && is_numeric($page) ? '&page='.$page : null).(!empty($search) ? '&search='.urlencode($search) : null));
+				exit;
+			}
+	}
+
+//pre-populate the form
+	if (!empty($_GET) && !empty($_GET["id"]) && is_uuid($_GET["id"]) && empty($_POST["persistformvar"])) {
+		$gateway_uuid = $_GET["id"];
+		$sql = "select * from v_gateways ";
+		$sql .= "where gateway_uuid = :gateway_uuid ";
+		$parameters['gateway_uuid'] = $gateway_uuid;
+		$row = $database->select($sql, $parameters, 'row');
+		if (!empty($row)) {
+			$domain_uuid = $row["domain_uuid"];
+			$gateway = $row["gateway"];
+			$username = $row["username"];
+			$password = $row["password"];
+			$distinct_to = $row["distinct_to"];
+			$auth_username = $row["auth_username"];
+			$realm = $row["realm"];
+			$from_user = $row["from_user"];
+			$from_domain = $row["from_domain"];
+			$proxy = $row["proxy"];
+			$register_proxy = $row["register_proxy"];
+			$outbound_proxy = $row["outbound_proxy"];
+			$expire_seconds = $row["expire_seconds"];
+			$register = $row["register"];
+			$register_transport = $row["register_transport"];
+			$contact_params = $row["contact_params"];
+			$retry_seconds = $row["retry_seconds"];
+			$extension = $row["extension"];
+			$ping = $row["ping"];
+			$ping_min = $row["ping_min"];
+			$ping_max = $row["ping_max"];
+			$contact_in_ping = $row["contact_in_ping"] ?? false;
+			$channels = $row["channels"];
+			$caller_id_in_from = $row["caller_id_in_from"] ?? false;
+			$supress_cng = $row["supress_cng"] ?? false;
+			$sip_cid_type = $row["sip_cid_type"];
+			$codec_prefs = $row["codec_prefs"];
+			$extension_in_contact = $row["extension_in_contact"];
+			$context = $row["context"];
+			$profile = $row["profile"];
+			$hostname = $row["hostname"];
+			$enabled = $row["enabled"];
+			$description = $row["description"];
+		}
+		unset($sql, $parameters, $row);
+	}
+
+//get the sip profiles
+	$sql = "select sip_profile_name from v_sip_profiles ";
+	$sql .= "where sip_profile_enabled = true ";
+	$sql .= "order by sip_profile_name asc ";
+	$sip_profiles = $database->select($sql, null, 'all');
+	unset($sql);
+
+//set the defaults
+	$gateway_uuid = $gateway_uuid ?? '';
+	$retry_seconds = $retry_seconds ?? '30';
+	$gateway = $gateway ?? '';
+	$username = $username ?? '';
+	$password = $password ?? '';
+	$auth_username = $auth_username ?? '';
+	$realm = $realm ?? '';
+	$from_user = $from_user ?? '';
+	$from_domain = $from_domain ?? '';
+	$proxy = $proxy ?? '';
+	$register_proxy = $register_proxy ?? '';
+	$outbound_proxy = $outbound_proxy ?? '';
+	$expire_seconds = $expire_seconds ?? '';
+	$register_transport = $register_transport ?? '';
+	$contact_params = $contact_params ?? '';
+	$extension = $extension ?? '';
+	$ping = $ping ?? '';
+	$ping_min = $ping_min ?? '';
+	$ping_max = $ping_max ?? '';
+	$channels = $channels ?? '';
+	$sip_cid_type = $sip_cid_type ?? '';
+	$codec_prefs = $codec_prefs ?? '';
+	$extension_in_contact = $extension_in_contact ?? '';
+	$context = $context ?? '';
+	$profile = $profile ?? '';
+	$hostname = $hostname ?? '';
+	$description = $description ?? '';
+	$register = $register ?? false;
+	$distinct_to = $distinct_to ?? false;
+	$caller_id_in_from = $caller_id_in_from ?? false;
+	$supress_cng = $supress_cng ?? false;
+	$contact_in_ping = $contact_in_ping ?? false;
+	$enabled = $enabled ?? true;
+
+//create token
+	$object = new token;
+	$token = $object->create($_SERVER['PHP_SELF']);
+
+//show the header
+	$document['title'] = $text['title-gateway'];
+	require_once "resources/header.php";
+
+//show the content
+	echo "<script type=\"text/javascript\" language=\"JavaScript\">\n";
+	echo "\n";
+	echo "	function enable_change(enable_over) {\n";
+	echo "		var endis;\n";
+	echo "		endis = !(document.iform.enable.checked || enable_over);\n";
+	echo "		document.iform.range_from.disabled = endis;\n";
+	echo "		document.iform.range_to.disabled = endis;\n";
+	echo "	}\n";
+	echo "\n";
+	echo "	function show_advanced_config() {\n";
+	echo "		const rows = document.querySelectorAll('.advanced-row');\n";
+	echo "		rows.forEach(row => {\n";
+	echo "			row.style.display = row.style.display == 'none' ? 'table-row' : 'none';\n";
+	echo "		});\n";
+	echo "	}\n";
+	echo "</script>";
+
+	echo "<div class='action_bar' id='action_bar'>\n";
+	echo "	<div class='heading'><b>".$text['title-gateway']."</b></div>\n";
+	echo "	<div class='actions'>\n";
+	echo button::create(['type'=>'button','label'=>$text['button-back'],'icon'=>$settings->get('theme', 'button_icon_back'),'id'=>'btn_back','link'=>'gateways.php?'.(!empty($order_by) ? '&order_by='.$order_by.'&order='.$order : null).(isset($page) && is_numeric($page) ? '&page='.$page : null).(!empty($search) ? '&search='.urlencode($search) : null)]);
+	if ($action == "update" && permission_exists('gateway_add')) {
+		echo button::create(['type'=>'button','label'=>$text['button-copy'],'icon'=>$settings->get('theme', 'button_icon_copy'),'name'=>'btn_copy','style'=>'margin-left: 15px;','onclick'=>"modal_open('modal-copy','btn_copy');"]);
+	}
+	echo button::create(['type'=>'button','label'=>$text['button-save'],'icon'=>$settings->get('theme', 'button_icon_save'),'id'=>'btn_save','style'=>'margin-left: 15px;','onclick'=>'submit_form();']);
+	echo "	</div>\n";
+	echo "	<div style='clear: both;'></div>\n";
+	echo "</div>\n";
+
+	if ($action == "update" && permission_exists('gateway_add')) {
+		echo modal::create(['id'=>'modal-copy','type'=>'copy','actions'=>button::create(['type'=>'submit','label'=>$text['button-continue'],'icon'=>'check','id'=>'btn_copy','style'=>'float: right; margin-left: 15px;','collapse'=>'never','link'=>'gateway_copy.php?id='.urlencode($gateway_uuid),'onclick'=>"modal_close();"])]);
+	}
+
+	echo $text['description-gateway-edit']."\n";
+	echo "<br /><br />\n";
+
+	echo "<form name='frm' id='frm' method='post'>\n";
+	echo "<div class='card'>\n";
+	echo "<table width='100%' border='0' cellpadding='0' cellspacing='0'>\n";
+
+	echo "<tr>\n";
+	echo "<td width=\"30%\" class='vncellreq' valign='top' align='left' nowrap>\n";
+	echo "    ".$text['label-gateway']."\n";
+	echo "</td>\n";
+	echo "<td width=\"70%\" class='vtable' align='left'>\n";
+	echo "    <input class='formfld' type='text' name='gateway' maxlength='255' value=\"".escape($gateway)."\" required='required'>\n";
+	echo "<br />\n";
+	echo $text['description-gateway-name']."\n";
+	echo "</td>\n";
+	echo "</tr>\n";
+
+	echo "<tr>\n";
+	echo "<td class='vncellreq' valign='top' align='left' nowrap>\n";
+	echo "    ".$text['label-username']."\n";
+	echo "</td>\n";
+	echo "<td class='vtable' align='left'>\n";
+	echo "    <input class='formfld' type='text' name='username' maxlength='255' autocomplete='off' value=\"".escape($username)."\">\n";
+	echo "    <input type='text' style='display: none;' disabled='disabled'>\n"; //help defeat browser auto-fill
+	echo "<br />\n";
+	echo $text['description-username']."\n";
+	echo "</td>\n";
+	echo "</tr>\n";
+
+	echo "<tr>\n";
+	echo "<td class='vncellreq' valign='top' align='left' nowrap>\n";
+	echo "    ".$text['label-password']."\n";
+	echo "</td>\n";
+	echo "<td class='vtable' align='left'>\n";
+	echo "    <input type='password' style='display: none;' disabled='disabled'>\n"; //help defeat browser auto-fill
+	echo "    <input class='formfld password' type='password' name='password' id='password' autocomplete='new-password' maxlength='255' onmouseover=\"this.type='text';\" onfocus=\"this.type='text';\" onmouseout=\"if (!$(this).is(':focus')) { this.type='password'; }\" onblur=\"this.type='password';\" value=\"".escape($password)."\">\n";
+	echo "    <br />\n";
+	echo "    ".$text['description-password']."\n";
+	echo "</td>\n";
+	echo "</tr>\n";
+
+	echo "<tr>\n";
+	echo "<td class='vncell' valign='top' align='left' nowrap>\n";
+	echo "    ".$text['label-from_user']."\n";
+	echo "</td>\n";
+	echo "<td class='vtable' align='left'>\n";
+	echo "    <input class='formfld' type='text' name='from_user' maxlength='255' value=\"".escape($from_user)."\">\n";
+	echo "<br />\n";
+	echo $text['description-from_user']."\n";
+	echo "</td>\n";
+	echo "</tr>\n";
+
+	echo "<tr>\n";
+	echo "<td class='vncell' valign='top' align='left' nowrap>\n";
+	echo "    ".$text['label-from_domain']."\n";
+	echo "</td>\n";
+	echo "<td class='vtable' align='left'>\n";
+	echo "    <input class='formfld' type='text' name='from_domain' maxlength='255' value=\"".escape($from_domain)."\">\n";
+	echo "<br />\n";
+	echo $text['description-from_domain']."\n";
+	echo "</td>\n";
+	echo "</tr>\n";
+
+	echo "<tr>\n";
+	echo "<td class='vncellreq' valign='top' align='left' nowrap>\n";
+	echo "    ".$text['label-proxy']."\n";
+	echo "</td>\n";
+	echo "<td class='vtable' align='left'>\n";
+	echo "    <input class='formfld' type='text' name='proxy' maxlength='255' value=\"".escape($proxy)."\" required='required'>\n";
+	echo "<br />\n";
+	echo $text['description-proxy']."\n";
+	echo "</td>\n";
+	echo "</tr>\n";
+
+	echo "<tr>\n";
+	echo "<td class='vncell' valign='top' align='left' nowrap>\n";
+	echo "    ".$text['label-realm']."\n";
+	echo "</td>\n";
+	echo "<td class='vtable' align='left'>\n";
+	echo "    <input class='formfld' type='text' name='realm' maxlength='255' value=\"".escape($realm)."\">\n";
+	echo "<br />\n";
+	echo $text['description-realm']."\n";
+	echo "</td>\n";
+	echo "</tr>\n";
+
+	echo "<tr>\n";
+	echo "<td class='vncellreq' valign='top' align='left' nowrap>\n";
+	echo "    ".$text['label-expire_seconds']."\n";
+	echo "</td>\n";
+	echo "<td class='vtable' align='left'>\n";
+	if (empty($expire_seconds)) { $expire_seconds = "800"; }
+	echo "  <input class='formfld' type='number' name='expire_seconds' maxlength='255' value='".escape($expire_seconds)."' min='1' max='65535' step='1' required='required'>\n";
+	echo "<br />\n";
+	echo $text['description-expire_seconds']."\n";
+	echo "</td>\n";
+	echo "</tr>\n";
+
+	echo "<tr>\n";
+	echo "<td class='vncellreq' valign='top' align='left' nowrap>\n";
+	echo "    ".$text['label-register']."\n";
+	echo "</td>\n";
+	echo "<td class='vtable' align='left'>\n";
+	if ($input_toggle_style_switch) {
+		echo "	<span class='switch'>\n";
+	}
+	echo "	<select class='formfld' id='register' name='register'>\n";
+	echo "		<option value='true' ".($register == true ? "selected='selected'" : null).">".$text['option-true']."</option>\n";
+	echo "		<option value='false' ".($register == false ? "selected='selected'" : null).">".$text['option-false']."</option>\n";
+	echo "	</select>\n";
+	if ($input_toggle_style_switch) {
+		echo "		<span class='slider'></span>\n";
+		echo "	</span>\n";
+	}
+	echo "<br />\n";
+	echo $text['description-register']."\n";
+	echo "</td>\n";
+	echo "</tr>\n";
+
+	echo "<tr>\n";
+	echo "<td class='vncellreq' valign='top' align='left' nowrap>\n";
+	echo "    ".$text['label-retry_seconds']."\n";
+	echo "</td>\n";
+	echo "<td class='vtable' align='left'>\n";
+	echo "  <input class='formfld' type='number' name='retry_seconds' maxlength='255' value='".escape($retry_seconds)."' min='1' max='65535' step='1' required='required'>\n";
+	echo "<br />\n";
+	echo $text['description-retry_seconds']."\n";
+	echo "</td>\n";
+	echo "</tr>\n";
+
+	echo "<tr>\n";
+	echo "	<td valign=\"top\" class=\"vncell\">&nbsp;</td>\n";
+	echo "	<td class=\"vtable\">\n";
+	echo "		".button::create(['type'=>'button','label'=>$text['button-advanced'],'icon'=>'tools','onclick'=>'show_advanced_config();']);
+	echo "	</td>\n";
+	echo "</tr>\n";
+
+	echo "<tr class='advanced-row' style='display: none;'>\n";
+	echo "<td class='vncell' valign='top' align='left' nowrap>\n";
+	echo "    ".$text['label-distinct_to']."\n";
+	echo "</td>\n";
+	echo "<td class='vtable' align='left'>\n";
+	if ($input_toggle_style_switch) {
+		echo "	<span class='switch'>\n";
+	}
+	echo "	<select class='formfld' id='distinct_to' name='distinct_to'>\n";
+	echo "		<option value='true' ".($distinct_to == true ? "selected='selected'" : null).">".$text['option-true']."</option>\n";
+	echo "		<option value='false' ".($distinct_to == false ? "selected='selected'" : null).">".$text['option-false']."</option>\n";
+	echo "	</select>\n";
+	if ($input_toggle_style_switch) {
+		echo "		<span class='slider'></span>\n";
+		echo "	</span>\n";
+	}
+	echo "<br />\n";
+	echo $text['description-distinct_to']."\n";
+	echo "</td>\n";
+	echo "</tr>\n";
+
+	echo "<tr class='advanced-row' style='display: none;'>\n";
+	echo "<td width='30%' class='vncell' valign='top' align='left' nowrap>\n";
+	echo "    ".$text['label-auth_username']."\n";
+	echo "</td>\n";
+	echo "<td width='70%' class='vtable' align='left'>\n";
+	echo "    <input class='formfld' type='text' name='auth_username' maxlength='255' value=\"".escape($auth_username)."\">\n";
+	echo "<br />\n";
+	echo $text['description-auth_username']."\n";
+	echo "</td>\n";
+	echo "</tr>\n";
+
+	echo "<tr class='advanced-row' style='display: none;'>\n";
+	echo "<td class='vncell' valign='top' align='left' nowrap>\n";
+	echo "    ".$text['label-extension']."\n";
+	echo "</td>\n";
+	echo "<td class='vtable' align='left'>\n";
+	echo "    <input class='formfld' type='text' name='extension' maxlength='255' value=\"".escape($extension)."\">\n";
+	echo "<br />\n";
+	echo $text['description-extension']."\n";
+	echo "</td>\n";
+	echo "</tr>\n";
+
+	echo "<tr class='advanced-row' style='display: none;'>\n";
+	echo "<td class='vncell' valign='top' align='left' nowrap>\n";
+	echo "    ".$text['label-register_transport']."\n";
+	echo "</td>\n";
+	echo "<td class='vtable' align='left'>\n";
+	echo "    <select class='formfld' name='register_transport'>\n";
+	echo "    <option value=''></option>\n";
+	if ($register_transport == "udp") {
+		echo "    <option value='udp' selected='selected'>udp</option>\n";
+	}
+	else {
+		echo "    <option value='udp'>udp</option>\n";
+	}
+	if ($register_transport == "tcp") {
+		echo "    <option value='tcp' selected='selected'>tcp</option>\n";
+	}
+	else {
+		echo "    <option value='tcp'>tcp</option>\n";
+	}
+	if ($register_transport == "tls") {
+		echo "    <option value='tls' selected='selected'>tls</option>\n";
+	}
+	else {
+		echo "    <option value='tls'>tls</option>\n";
+	}
+	echo "    </select>\n";
+	echo "<br />\n";
+	echo $text['description-register_transport']."\n";
+	echo "</td>\n";
+	echo "</tr>\n";
+
+	echo "<tr class='advanced-row' style='display: none;'>\n";
+	echo "<td class='vncell' valign='top' align='left' nowrap>\n";
+	echo "    ".$text['label-contact_params']."\n";
+	echo "</td>\n";
+	echo "<td class='vtable' align='left'>\n";
+	echo "    <input class='formfld' type='text' name='contact_params' maxlength='255' value=\"".escape($contact_params)."\">\n";
+	echo "<br />\n";
+	echo $text['description-contact_params']."\n";
+	echo "</td>\n";
+	echo "</tr>\n";
+
+	echo "<tr class='advanced-row' style='display: none;'>\n";
+	echo "<td class='vncell' valign='top' align='left' nowrap>\n";
+	echo "    ".$text['label-register_proxy']."\n";
+	echo "</td>\n";
+	echo "<td class='vtable' align='left'>\n";
+	echo "    <input class='formfld' type='text' name='register_proxy' maxlength='255' value=\"".escape($register_proxy)."\">\n";
+	echo "<br />\n";
+	echo $text['description-register_proxy']."\n";
+	echo "</td>\n";
+	echo "</tr>\n";
+
+	echo "<tr class='advanced-row' style='display: none;'>\n";
+	echo "<td class='vncell' valign='top' align='left' nowrap>\n";
+	echo "    ".$text['label-outbound_proxy']."\n";
+	echo "</td>\n";
+	echo "<td class='vtable' align='left'>\n";
+	echo "    <input class='formfld' type='text' name='outbound_proxy' maxlength='255' value=\"".escape($outbound_proxy)."\">\n";
+	echo "<br />\n";
+	echo $text['description-outbound_proxy']."\n";
+	echo "</td>\n";
+	echo "</tr>\n";
+
+	echo "	<tr class='advanced-row' style='display: none;'>\n";
+	echo "	<td class='vncell' valign='top' align='left' nowrap>\n";
+	echo "		".$text['label-caller_id_in_from']."\n";
+	echo "	</td>\n";
+	echo "	<td class='vtable' align='left'>\n";
+	if ($input_toggle_style_switch) {
+		echo "	<span class='switch'>\n";
+	}
+	echo "	<select class='formfld' id='caller_id_in_from' name='caller_id_in_from'>\n";
+	echo "		<option value='true' ".($caller_id_in_from == true ? "selected='selected'" : null).">".$text['option-true']."</option>\n";
+	echo "		<option value='false' ".($caller_id_in_from == false ? "selected='selected'" : null).">".$text['option-false']."</option>\n";
+	echo "	</select>\n";
+	if ($input_toggle_style_switch) {
+		echo "		<span class='slider'></span>\n";
+		echo "	</span>\n";
+	}
+	echo "<br />\n";
+	echo $text['description-caller_id_in_from']."\n";
+	echo "</td>\n";
+	echo "</tr>\n";
+
+	echo "<tr class='advanced-row' style='display: none;'>\n";
+	echo "<td class='vncell' valign='top' align='left' nowrap='nowrap'>\n";
+	echo "    ".$text['label-supress_cng']."\n";
+	echo "</td>\n";
+	echo "<td class='vtable' align='left'>\n";
+	if ($input_toggle_style_switch) {
+		echo "	<span class='switch'>\n";
+	}
+	echo "	<select class='formfld' id='supress_cng' name='supress_cng'>\n";
+	echo "		<option value='true' ".($supress_cng == true ? "selected='selected'" : null).">".$text['option-true']."</option>\n";
+	echo "		<option value='false' ".($supress_cng == false ? "selected='selected'" : null).">".$text['option-false']."</option>\n";
+	echo "	</select>\n";
+	if ($input_toggle_style_switch) {
+		echo "		<span class='slider'></span>\n";
+		echo "	</span>\n";
+	}
+	echo "<br />\n";
+	echo $text['description-supress_cng']."\n";
+	echo "</td>\n";
+	echo "</tr>\n";
+
+	echo "<tr class='advanced-row' style='display: none;'>\n";
+	echo "<td class='vncell' valign='top' align='left' nowrap>\n";
+	echo "    ".$text['label-sip_cid_type']."\n";
+	echo "</td>\n";
+	echo "<td class='vtable' align='left'>\n";
+	echo "    <input class='formfld' type='text' name='sip_cid_type' maxlength='255' value=\"".escape($sip_cid_type)."\" pattern='^(none|pid|rpid)$'>\n";
+	echo "<br />\n";
+	echo $text['description-sip_cid_type']."\n";
+	echo "</td>\n";
+	echo "</tr>\n";
+
+	echo "<tr class='advanced-row' style='display: none;'>\n";
+	echo "<td class='vncell' valign='top' align='left' nowrap>\n";
+	echo "    ".$text['label-codec_prefs']."\n";
+	echo "</td>\n";
+	echo "<td class='vtable' align='left'>\n";
+	echo "    <input class='formfld' type='text' name='codec_prefs' maxlength='255' value=\"".escape($codec_prefs)."\">\n";
+	echo "<br />\n";
+	echo $text['description-codec_prefs']."\n";
+	echo "</td>\n";
+	echo "</tr>\n";
+
+	echo "<tr class='advanced-row' style='display: none;'>\n";
+	echo "<td class='vncell' valign='top' align='left' nowrap>\n";
+	echo "    ".$text['label-extension_in_contact']."\n";
+	echo "</td>\n";
+	echo "<td class='vtable' align='left'>\n";
+	echo "    <select class='formfld' name='extension_in_contact'>\n";
+	echo "    <option value=''></option>\n";
+	if ($extension_in_contact == "true") {
+		echo "    <option value='true' selected='selected'>".$text['label-true']."</option>\n";
+	}
+	else {
+		echo "    <option value='true'>".$text['label-true']."</option>\n";
+	}
+	if ($extension_in_contact == "false") {
+		echo "    <option value='false' selected='selected'>".$text['label-false']."</option>\n";
+	}
+	else {
+		echo "    <option value='false'>".$text['label-false']."</option>\n";
+	}
+	echo "    </select>\n";
+	echo "<br />\n";
+	echo $text['description-extension_in_contact']."\n";
+	echo "</td>\n";
+	echo "</tr>\n";
+
+	echo "<tr class='advanced-row' style='display: none;'>\n";
+	echo "<td class='vncell' valign='top' align='left' nowrap>\n";
+	echo "    ".$text['label-ping']."\n";
+	echo "</td>\n";
+	echo "<td class='vtable' align='left'>\n";
+	echo "    <input class='formfld' type='number' name='ping' maxlength='255' min='1' max='65535' step='1' value=\"".escape($ping)."\">\n";
+	echo "<br />\n";
+	echo $text['description-ping']."\n";
+	echo "</td>\n";
+	echo "</tr>\n";
+
+	echo "<tr class='advanced-row' style='display: none;'>\n";
+	echo "<td class='vncell' valign='top' align='left' nowrap>\n";
+	echo "    ".$text['label-ping_min']."\n";
+	echo "</td>\n";
+	echo "<td class='vtable' align='left'>\n";
+	echo "    <input class='formfld' type='number' name='ping_min' maxlength='255' min='1' max='65535' step='1' value=\"".escape($ping_min)."\">\n";
+	echo "<br />\n";
+	echo $text['description-ping_min']."\n";
+	echo "</td>\n";
+	echo "</tr>\n";
+
+	echo "<tr class='advanced-row' style='display: none;'>\n";
+	echo "<td class='vncell' valign='top' align='left' nowrap>\n";
+	echo "    ".$text['label-ping_max']."\n";
+	echo "</td>\n";
+	echo "<td class='vtable' align='left'>\n";
+	echo "    <input class='formfld' type='number' name='ping_max' maxlength='255' min='1' max='65535' step='1' value=\"".escape($ping_max)."\">\n";
+	echo "<br />\n";
+	echo $text['description-ping_max']."\n";
+	echo "</td>\n";
+	echo "</tr>\n";
+
+	echo "<tr class='advanced-row' style='display: none;'>\n";
+	echo "<td class='vncell' valign='top' align='left' nowrap>\n";
+	echo "    ".$text['label-contact_in_ping']."\n";
+	echo "</td>\n";
+	echo "<td class='vtable' align='left'>\n";
+	if ($input_toggle_style_switch) {
+		echo "	<span class='switch'>\n";
+	}
+	echo "	<select class='formfld' id='contact_in_ping' name='contact_in_ping'>\n";
+	echo "		<option value='true' ".($contact_in_ping == true ? "selected='selected'" : null).">".$text['option-true']."</option>\n";
+	echo "		<option value='false' ".($contact_in_ping == false ? "selected='selected'" : null).">".$text['option-false']."</option>\n";
+	echo "	</select>\n";
+	if ($input_toggle_style_switch) {
+		echo "		<span class='slider'></span>\n";
+		echo "	</span>\n";
+	}
+	echo "<br />\n";
+	echo $text['description-contact_in_ping']."\n";
+	echo "</td>\n";
+	echo "</tr>\n";
+
+	if (permission_exists('gateway_channels')) {
+		echo "<tr class='advanced-row' style='display: none;'>\n";
+		echo "<td class='vncell' valign='top' align='left' nowrap>\n";
+		echo "    ".$text['label-channels']."\n";
+		echo "</td>\n";
+		echo "<td class='vtable' align='left'>\n";
+		echo "    <input class='formfld' type='number' name='channels' maxlength='255' value=\"".escape($channels)."\" min='0' max='65535' step='1'>\n";
+		echo "<br />\n";
+		echo $text['description-channels']."\n";
+		echo "</td>\n";
+		echo "</tr>\n";
+	}
+
+	echo "<tr class='advanced-row' style='display: none;'>\n";
+	echo "<td class='vncell' valign='top' align='left' nowrap='nowrap'>\n";
+	echo "	".$text['label-hostname']."\n";
+	echo "</td>\n";
+	echo "<td class='vtable' align='left'>\n";
+	echo "	<input class='formfld' type='text' name='hostname' maxlength='255' value=\"".escape($hostname)."\">\n";
+	echo "<br />\n";
+	echo $text['description-hostname']."\n";
+	echo "</td>\n";
+	echo "</tr>\n";
+
+	if (permission_exists('gateway_domain')) {
+		echo "<tr class='advanced-row' style='display: none;'>\n";
+		echo "<td class='vncell' valign='top' align='left' nowrap='nowrap'>\n";
+		echo "	".$text['label-domain']."\n";
+		echo "</td>\n";
+		echo "<td class='vtable' align='left'>\n";
+		echo "    <select class='formfld' name='domain_uuid'>\n";
+		if (empty($domain_uuid)) {
+			echo "    <option value='' selected='selected'>".$text['select-global']."</option>\n";
+		}
+		else {
+			echo "    <option value=''>".$text['select-global']."</option>\n";
+		}
+		foreach ($_SESSION['domains'] as $row) {
+			if ($row['domain_uuid'] == $domain_uuid) {
+				echo "    <option value='".escape($row['domain_uuid'])."' selected='selected'>".escape($row['domain_name'])."</option>\n";
+			}
+			else {
+				echo "    <option value='".escape($row['domain_uuid'])."'>".escape($row['domain_name'])."</option>\n";
+			}
+		}
+		echo "    </select>\n";
+		echo "<br />\n";
+		echo $text['description-domain_name']."\n";
+		echo "</td>\n";
+		echo "</tr>\n";
+	}
+
+
+	echo "<tr>\n";
+	echo "<td class='vncell' valign='top' align='left' nowrap='nowrap'>\n";
+	echo "	".$text['label-context']."\n";
+	echo "</td>\n";
+	echo "<td class='vtable' align='left'>\n";
+	if (empty($context)) { $context = "public"; }
+	echo "	<input class='formfld' type='text' name='context' maxlength='255' value=\"".escape($context)."\">\n";
+	echo "<br />\n";
+	echo $text['description-context']."\n";
+	echo "</td>\n";
+	echo "</tr>\n";
+
+	echo "<tr>\n";
+	echo "<td class='vncellreq' valign='top' align='left' nowrap>\n";
+	echo "	".$text['label-profile']."\n";
+	echo "</td>\n";
+	echo "<td class='vtable' align='left'>\n";
+	echo "	<select class='formfld' name='profile' required='required'>\n";
+	foreach ($sip_profiles as $row) {
+		$sip_profile_name = $row["sip_profile_name"];
+		if ($profile == $sip_profile_name) {
+			echo "	<option value='$sip_profile_name' selected='selected'>".escape($sip_profile_name)."</option>\n";
+		}
+		else {
+			echo "	<option value='".escape($sip_profile_name)."'>".escape($sip_profile_name)."</option>\n";
+		}
+	}
+	echo "	</select>\n";
+	echo "<br />\n";
+	echo $text['description-profile']."\n";
+	echo "</td>\n";
+	echo "</tr>\n";
+
+	echo "<tr>\n";
+	echo "<td class='vncellreq' valign='top' align='left' nowrap='nowrap'>\n";
+	echo "	".$text['label-enabled']."\n";
+	echo "</td>\n";
+	echo "<td class='vtable' align='left'>\n";
+	if ($input_toggle_style_switch) {
+		echo "	<span class='switch'>\n";
+	}
+	echo "	<select class='formfld' id='enabled' name='enabled'>\n";
+	echo "		<option value='true' ".($enabled == true ? "selected='selected'" : null).">".$text['option-true']."</option>\n";
+	echo "		<option value='false' ".($enabled == false ? "selected='selected'" : null).">".$text['option-false']."</option>\n";
+	echo "	</select>\n";
+	if ($input_toggle_style_switch) {
+		echo "		<span class='slider'></span>\n";
+		echo "	</span>\n";
+	}
+	echo "<br />\n";
+	echo $text['description-enabled']."\n";
+	echo "</td>\n";
+	echo "</tr>\n";
+
+	echo "<tr>\n";
+	echo "<td class='vncell' valign='top' align='left' nowrap='nowrap'>\n";
+	echo "	".$text['label-description']."\n";
+	echo "</td>\n";
+	echo "<td class='vtable' align='left'>\n";
+	echo "	<input class='formfld' type='text' name='description' maxlength='255' value=\"".escape($description)."\">\n";
+	echo "<br />\n";
+	echo $text['description-description']."\n";
+	echo "</td>\n";
+	echo "</tr>\n";
+
+	echo "</table>";
+	echo "</div>\n";
+
+	if ($action == "update") {
+		echo "<input type='hidden' name='gateway_uuid' value='".escape($gateway_uuid)."'>\n";
+	}
+	echo "<input type='hidden' name='search' id='search' value=\"".escape($search ?? '')."\" />\n";
+	echo "<input type='hidden' name='".$token['name']."' value='".$token['hash']."'>\n";
+
+	echo "</form>";
+	echo "<br><br>";
+
+//hide password fields before submit
+	echo "<script>\n";
+	echo "	function submit_form() {\n";
+	echo "		hide_password_fields();\n";
+	echo "		$('form#frm').submit();\n";
+	echo "	}\n";
+	echo "</script>\n";
+
+//include the footer
+	require_once "resources/footer.php";
+
+?>

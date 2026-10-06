@@ -1,0 +1,44 @@
+Friday, Sep 18, 2026, 10:30 AM (UTC+3) | L7541 | silent | \nwhen i call to 8414 is stays silent or plats normal ring tone the drop the call with out reaching agent why?\n</user_query>"}]}}
+Friday, Sep 18, 2026, 10:33 AM (UTC+3) | L7545 | media_webrtc | \nroot@ecs-cc:~# PW=$(grep -E '^ESL_PASSWORD=' /opt/skykin/app/.env 2>/dev/null | cut -d= -f2-)\n[ -z \"$PW\" ] && PW=ClueCon\nFS(){ docker exec skykin-freeswit
+Friday, Sep 18, 2026, 10:33 AM (UTC+3) | L7546 | TEMPORARY_FAILURE | Root cause: calls reach the PBX and try agent 201, but the softphone leg fails instantly with `NORMAL_TEMPORARY_FAILURE`, then the caller is cleared. Dialplan g
+Friday, Sep 18, 2026, 10:33 AM (UTC+3) | L7547 | media_webrtc | 
+Friday, Sep 18, 2026, 10:33 AM (UTC+3) | L7548 | TEMPORARY_FAILURE | The real bug: we `answer()` for the opening, so `session:answered()` stays true and the hunt exits after the first agent failure. Fixing that."},{"type":"tool_u
+Friday, Sep 18, 2026, 10:33 AM (UTC+3) | L7549 | TEMPORARY_FAILURE | Here’s what your dump shows:\n\n### Cause\n1. Call **does reach** our PBX → tries **201**\n2. Agent leg fails **instantly**: `NORMAL_TEMPORARY_FAILURE` (softpho
+Friday, Sep 18, 2026, 10:38 AM (UTC+3) | L7550 | TEMPORARY_FAILURE | \n'grep -E \"inbound try|inbound cause|roll next|queue wait|TEMPORARY\" /var/log/freeswitch/freeswitch.log | tail -20'\n18a44b7b-fdc2-44b8-a676-f67075596eea 202
+Friday, Sep 18, 2026, 10:38 AM (UTC+3) | L7551 | media_webrtc | Agent 201 is registered over UDP, but we're originating with `media_webrtc=true` — that causes instant `NORMAL_TEMPORARY_FAILURE`. Fixing the bridge to match th
+Friday, Sep 18, 2026, 10:38 AM (UTC+3) | L7552 | media_webrtc | The log is clear:\n\n`Cannot create outgoing channel of type [user] … NORMAL_TEMPORARY_FAILURE`\n\nAgent **201 is registered as plain SIP UDP** (`transport=udp`
+Friday, Sep 18, 2026, 10:42 AM (UTC+3) | L7554 | sip-udp | Checking whether only agent 1 is eligible, or longest-idle is stuck on 201."},{"type":"tool_use","name":"Shell","input":{"command":"python -c \"\nprint('''Run o
+Friday, Sep 18, 2026, 10:46 AM (UTC+3) | L7556 | media_webrtc | \nroot@ecs-cc:~# PW=$(grep -E '^ESL_PASSWORD=' /opt/skykin/app/.env 2>/dev/null | cut -d= -f2-)\n[ -z \"$PW\" ] && PW=ClueCon\nFS(){ docker exec skykin-freeswit
+Friday, Sep 18, 2026, 10:48 AM (UTC+3) | L7565 | silent | 
+Friday, Sep 18, 2026, 11:00 AM (UTC+3) | L7585 | silent | Checking what call records we keep and whether rings that never hit the PBX show up."},{"type":"tool_use","name":"Grep","input":{"glob":"*.{php,lua,sh}","head_l
+Friday, Sep 18, 2026, 11:38 AM (UTC+3) | L7606 | Answered Failed | 
+Friday, Sep 18, 2026, 11:39 AM (UTC+3) | L7610 | Answer failed | That's the softphone Answer button failing — searching for that error in the answer path."},{"type":"tool_use","name":"Grep","input":{"glob":"*.{php,js}","head_
+Friday, Sep 18, 2026, 11:39 AM (UTC+3) | L7611 | Answer failed | 
+Friday, Sep 18, 2026, 11:41 AM (UTC+3) | L7614 | DTLS fingerprint | Exact error: inbound SDP has no DTLS fingerprint — browser WebRTC needs it. Checking how we build the agent bridge."},{"type":"tool_use","name":"Grep","input":{
+Friday, Sep 18, 2026, 11:41 AM (UTC+3) | L7615 | media_webrtc | 
+Friday, Sep 18, 2026, 11:41 AM (UTC+3) | L7616 | Answer failed | Browser got a plain SIP offer (no DTLS fingerprint). WebRTC contacts like `*.invalid` were mis-detected as UDP. Fixing detection and redeploying."},{"type":"too
+Friday, Sep 18, 2026, 11:41 AM (UTC+3) | L7617 | DTLS fingerprint | That toast is exact: Chrome got an SDP **without a DTLS fingerprint**, so Answer fails.\n\n**Cause:** FreeSWITCH offered the call as plain SIP (UDP path). The d
+Friday, Sep 18, 2026, 11:44 AM (UTC+3) | L7619 | Answer failed | It broke because of a **recent fix for a different problem**.\n\n**Before:** every agent bridge used `media_webrtc=true` → Chrome always got a DTLS fingerprint 
+Friday, Sep 18, 2026, 11:46 AM (UTC+3) | L7621 | Answer failed | It fixes **both**, by picking the right path per registration:\n\n| Agent registration | What we do | Result |\n|---|---|---|\n| Dashboard WebRTC (`.invalid` / 
+Friday, Sep 18, 2026, 12:11 PM (UTC+3) | L7622 | media_webrtc | \n406:    leg = \"[leg_timeout=30,media_webrtc=true,rtp_secure_media=true,rtp_advertise_ip=\"\nroot@ecs-cc:~# PW=$(grep -E '^ESL_PASSWORD=' /opt/skykin/app/.env
+Friday, Sep 18, 2026, 12:11 PM (UTC+3) | L7624 | Answer failed | 
+Friday, Sep 18, 2026, 12:11 PM (UTC+3) | L7625 | DTLS fingerprint | Your reg dump explains it.\n\nAgents are **not** real UDP phones. They register through **`skykin-ws-sip`**:\n\n`Chrome (WebRTC) → WSS proxy → FreeSWITCH sees U
+Friday, Sep 18, 2026, 12:16 PM (UTC+3) | L7626 | sip-udp | \nstill failed or can we rvert it to worlking stage when answer is working\nroot@ecs-cc:~# docker exec skykin-freeswitch sh -c \\\n  'grep -E \"bridge webrtc|br
+Friday, Sep 18, 2026, 12:16 PM (UTC+3) | L7627 | Answer failed | Logs show most tries still used `sip-udp`; only the last one hit `webrtc`. Reverting agent bridges to always use WebRTC (the state when Answer worked)."},{"type
+Friday, Sep 18, 2026, 12:16 PM (UTC+3) | L7628 | media_webrtc | Your log proves the old split was still active (`sip-udp` on almost every try). Only the last line used `webrtc`.\n\nReverted to the **working Answer path**: ev
+Friday, Sep 18, 2026, 12:23 PM (UTC+3) | L7630 | Answer failed | **Short answer:** that earlier problem was misread. With always-WebRTC (what you have now), you are back on the path where **Answer worked**. You should **not**
+Friday, Sep 18, 2026, 12:35 PM (UTC+3) | L7639 | media_webrtc | Outbound should land in the same archive folder as inbound. Checking why it may not appear, and ensuring outbound recording starts when the call connects."},{"t
+Friday, Sep 18, 2026, 12:49 PM (UTC+3) | L7656 | Answer failed | Here’s where things stand:\n\n**Working now**\n- Busy callers: waiting once → music loops (not drop)\n- Dial pad returns after a missed/cancelled ring\n- Answer
+Friday, Sep 18, 2026, 6:24 PM (UTC+3) | L7684 | TEMPORARY_FAILURE | \nanalysie the log \nTime\tCaller\tDestination\tAgent\tDirection\tDuration\tStatus\tCause\n2026-09-18 18:19\t251985561156\t251116198037\tAgent 1 (201)\tinbound\
+Friday, Sep 18, 2026, 6:24 PM (UTC+3) | L7685 | TEMPORARY_FAILURE | I'll map how your dashboard labels Abandoned/Missed/Failed, then break down the patterns in this log."},{"type":"tool_use","name":"Grep","input":{"path":"C:\\Us
+Friday, Sep 18, 2026, 6:24 PM (UTC+3) | L7687 | TEMPORARY_FAILURE | **Abandoned and Failed here are mostly operational + dial behavior, not “missing CDRs.”** The labels mean exactly what the dashboard defines.\n\n### What the la
+Friday, Sep 18, 2026, 6:31 PM (UTC+3) | L7690 | TEMPORARY_FAILURE | **Abandoned is not the same as “Answer not working.”**\n\n| Situation | What you usually see |\n|-----------|----------------------|\n| Answer/WebRTC broken | O
+Friday, Sep 18, 2026, 6:32 PM (UTC+3) | L7695 | TEMPORARY_FAILURE | Pulling FreeSWITCH and CDR evidence for the abandon windows to separate wait/no-agent from Answer failures."},{"type":"tool_use","name":"Shell","input":{"comman
+Friday, Sep 18, 2026, 6:32 PM (UTC+3) | L7696 | TEMPORARY_FAILURE | 
+Friday, Sep 18, 2026, 6:32 PM (UTC+3) | L7699 | TEMPORARY_FAILURE | SSH from this PC can’t reach `ecs-cc` right now (timeout), so run these **on the server** as `root@ecs-cc`. That will tell us for sure.\n\n### 1) Hour buckets —
+Friday, Sep 18, 2026, 6:36 PM (UTC+3) | L7701 | TEMPORARY_FAILURE | \nroot@ecs-cc:~# docker exec skykin-db psql -U fusionpbx -d fusionpbx -c \"\nSELECT\n  to_char(start_stamp AT TIME ZONE 'Africa/Addis_Ababa', 'HH24') AS hh,\n  
+Friday, Sep 18, 2026, 6:36 PM (UTC+3) | L7702 | TEMPORARY_FAILURE | **Yes — from the server we can be sure.** That 14:00 window was mostly **Answer/bridge failing**, not “agents offline.”\n\n### What the server proves\n\n**14:00
+Friday, Sep 18, 2026, 6:38 PM (UTC+3) | L7705 | TEMPORARY_FAILURE | Yes. Those Abandoned calls (especially **~14:00–14:25**) line up with the Answer-failure work.\n\nServer log matches that: agents **Ready**, bridge to WebRTC (`
+Friday, Sep 18, 2026, 6:39 PM (UTC+3) | L7708 | Answer failed | Checking what we deployed for the Answer failure and whether it's still in place."},{"type":"tool_use","name":"Grep","input":{"path":"C:\\Users\\hp\\.cursor\\pr
+Friday, Sep 18, 2026, 6:39 PM (UTC+3) | L7709 | Answer failed | 
+Friday, Sep 18, 2026, 6:39 PM (UTC+3) | L7710 | Answer failed | Yes. We fixed that Answer failure.\n\n**What was wrong:** Agents register via `skykin-ws-sip` as UDP `@10.0.0.77`, but Chrome still needs **DTLS**. Bridging wit

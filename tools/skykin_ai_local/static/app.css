@@ -1,0 +1,171 @@
+:root {
+  --blue: #1d4ed8;
+  --blue-soft: #eff6ff;
+  --ink: #0f172a;
+  --muted: #64748b;
+  --line: #e2e8f0;
+  --ok: #16a34a;
+  --warn: #d97706;
+  --bg: #f1f5f9;
+  --card: #fff;
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font-family: "Segoe UI", system-ui, sans-serif;
+  color: var(--ink);
+  background:
+    radial-gradient(1200px 500px at 10% -10%, #dbeafe 0%, transparent 55%),
+    radial-gradient(900px 400px at 100% 0%, #e0e7ff 0%, transparent 50%),
+    var(--bg);
+  min-height: 100vh;
+}
+
+.page { max-width: 720px; margin: 0 auto; padding: 32px 20px 64px; }
+.top { margin-bottom: 24px; }
+.brand { font-size: 1.6rem; font-weight: 800; letter-spacing: -0.02em; color: #0f4c9a; }
+.brand span { color: var(--ink); font-weight: 600; }
+.tag { margin: 6px 0 0; color: var(--muted); font-size: 0.95rem; }
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 22px 22px 24px;
+  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.06);
+  margin-bottom: 16px;
+}
+.card h1, .card h2 { margin: 0 0 8px; font-size: 1.25rem; }
+.card h3 { margin: 18px 0 8px; font-size: 0.95rem; color: var(--muted); font-weight: 600; }
+.sub { margin: 0 0 16px; color: var(--muted); }
+
+.drop {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  border: 2px dashed #bfdbfe;
+  background: var(--blue-soft);
+  border-radius: 14px;
+  padding: 28px 16px;
+  cursor: pointer;
+  transition: border-color .15s, background .15s;
+}
+.drop:hover, .drop.drag { border-color: var(--blue); background: #dbeafe; }
+.drop strong { color: var(--blue); font-size: 1.05rem; }
+.drop span { color: var(--muted); font-size: 0.85rem; }
+
+.meta-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin: 14px 0 16px;
+}
+.meta-row label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.8rem;
+  color: var(--muted);
+  font-weight: 600;
+}
+.meta-row input {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-size: 0.95rem;
+  color: var(--ink);
+}
+
+.btn {
+  appearance: none;
+  border: 0;
+  background: var(--blue);
+  color: #fff;
+  font-weight: 650;
+  font-size: 0.95rem;
+  padding: 12px 18px;
+  border-radius: 11px;
+  cursor: pointer;
+  width: 100%;
+}
+.btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.btn.secondary { background: #e2e8f0; color: var(--ink); margin-top: 16px; }
+
+.steps { list-style: none; margin: 0 0 16px; padding: 0; }
+.steps li {
+  padding: 10px 12px;
+  border-radius: 10px;
+  margin-bottom: 6px;
+  color: var(--muted);
+  background: #f8fafc;
+  border: 1px solid transparent;
+  font-weight: 550;
+}
+.steps li.active {
+  color: var(--blue);
+  background: var(--blue-soft);
+  border-color: #bfdbfe;
+}
+.steps li.done {
+  color: var(--ok);
+  background: #f0fdf4;
+}
+
+.bar {
+  height: 10px;
+  background: #e2e8f0;
+  border-radius: 999px;
+  overflow: hidden;
+  margin-bottom: 10px;
+}
+.bar-fill {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, #2563eb, #38bdf8);
+  transition: width .35s ease;
+}
+
+.status { margin: 0; font-weight: 600; }
+.file-name { margin: 4px 0 0; color: var(--muted); font-size: 0.85rem; }
+
+.scores {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+}
+.score {
+  background: #f8fafc;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 12px;
+  text-align: center;
+}
+.score .k { font-size: 0.75rem; color: var(--muted); text-transform: capitalize; }
+.score .v { font-size: 1.5rem; font-weight: 800; color: var(--blue); margin-top: 2px; }
+
+.notes { margin: 0; line-height: 1.45; }
+.provider { margin: 0 0 12px; color: var(--muted); font-size: 0.85rem; }
+.transcript {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: #0f172a;
+  color: #e2e8f0;
+  border-radius: 12px;
+  padding: 14px;
+  font-size: 0.9rem;
+  line-height: 1.5;
+  max-height: 280px;
+  overflow: auto;
+}
+
+.error-card { border-color: #fecaca; background: #fff1f2; }
+.error-card h2 { color: #b91c1c; }
+
+@media (max-width: 560px) {
+  .scores { grid-template-columns: repeat(2, 1fr); }
+  .meta-row { grid-template-columns: 1fr; }
+}

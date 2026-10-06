@@ -1,0 +1,168 @@
+# SkyKin Call Center — full Docker stack
+# web (FusionPBX + SkyKin) + Postgres + FreeSWITCH
+#
+# Start:  cp .env.docker.example .env && docker compose up --build -d
+# App:    http://localhost:8080/app/agent_dashboard/index.php
+# Stop:   docker compose down
+#
+# Hybrid (FreeSWITCH on host/VM) — use:
+#   docker compose -f docker-compose.yml -f docker-compose.hybrid.yml up --build -d
+#
+# Production ecs-cc (host-network FreeSWITCH, HTTPS 8188) — use:
+#   docker compose -f docker-compose.ecs-cc.yml up --build -d
+# Copy .env.ecs-cc.example to .env first. Recreating skykin-freeswitch is
+# safe only after /opt/skykin/fs-config is populated from a live backup.
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: skykin-db
+    environment:
+      POSTGRES_DB: ${DB_NAME:-fusionpbx}
+      POSTGRES_USER: ${DB_USER:-fusionpbx}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-fusionpbx}
+    volumes:
+      - skykin_pgdata:/var/lib/postgresql/data
+    ports:
+      - "${DB_PUBLISH_PORT:-5433}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-fusionpbx} -d ${DB_NAME:-fusionpbx}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - skykin
+
+  freeswitch:
+    build:
+      context: ./docker/freeswitch
+    container_name: skykin-freeswitch
+    environment:
+      ESL_PASSWORD: ${ESL_PASSWORD:-ClueCon}
+      ESL_LISTEN_IP: "0.0.0.0"
+      RTP_START_PORT: ${RTP_START_PORT:-16384}
+      RTP_END_PORT: ${RTP_END_PORT:-16584}
+      # Must match FusionPBX / agent SIP Domain (not the container IP).
+      FS_DOMAIN: ${FS_DOMAIN:-client1.skykin.local}
+      EXTERNAL_SIP_IP: ${EXTERNAL_SIP_IP:-}
+      EXTERNAL_RTP_IP: ${EXTERNAL_RTP_IP:-}
+      # FusionPBX database, read by the Lua XML handler so that extensions created in
+      # the web UI can register immediately. Without it FreeSWITCH only knows the
+      # fixed FS_DIRECTORY_USERS list captured when the container started.
+      FUSIONPBX_DB_HOST: db
+      FUSIONPBX_DB_PORT: 5432
+      FUSIONPBX_DB_NAME: ${DB_NAME:-fusionpbx}
+      FUSIONPBX_DB_USER: ${DB_USER:-fusionpbx}
+      FUSIONPBX_DB_PASSWORD: ${DB_PASSWORD:-fusionpbx}
+      # Fallback directory users (ext:password,...) for a database-less lab. The
+      # FusionPBX database above is authoritative whenever it is reachable.
+      FS_DIRECTORY_USERS: ${FS_DIRECTORY_USERS:-}
+      # mod_callcenter queue used by the agent/supervisor dashboards.
+      FS_QUEUE_EXT: ${FS_QUEUE_EXT:-8000}
+      FS_QUEUE_STRATEGY: ${FS_QUEUE_STRATEGY:-longest-idle-agent}
+      FS_QUEUE_AGENTS: ${FS_QUEUE_AGENTS:-}
+      # Ethio Telecom IMS trunk. register=true. SIP whitelist is not enough:
+      # they must also allow FS_LAN_RTP_IP as a media/RTP source.
+      FS_OUTBOUND_GATEWAY: ${FS_OUTBOUND_GATEWAY:-SIP}
+      FS_OUTBOUND_PROXY: ${FS_OUTBOUND_PROXY:-}
+      FS_OUTBOUND_USERNAME: ${FS_OUTBOUND_USERNAME:-}
+      FS_OUTBOUND_PASSWORD: ${FS_OUTBOUND_PASSWORD:-}
+      FS_OUTBOUND_CID: ${FS_OUTBOUND_CID:-}
+      FS_OUTBOUND_REGISTER: ${FS_OUTBOUND_REGISTER:-false}
+      FS_OUTBOUND_REALM: ${FS_OUTBOUND_REALM:-}
+      FS_OUTBOUND_AUTH_USERNAME: ${FS_OUTBOUND_AUTH_USERNAME:-}
+      FS_OUTBOUND_FROM_DOMAIN: ${FS_OUTBOUND_FROM_DOMAIN:-}
+      FS_OUTBOUND_REGISTER_PROXY: ${FS_OUTBOUND_REGISTER_PROXY:-}
+      FS_LAN_RTP_IP: ${FS_LAN_RTP_IP:-}
+      FS_INBOUND_DID_REGEX: ${FS_INBOUND_DID_REGEX:-}
+      # CDR posting to FusionPBX. Without this the dashboards show 0 calls and no
+      # recordings, because they read call history from the FusionPBX database.
+      CDR_URL: ${CDR_URL:-http://web/app/xml_cdr/xml_cdr_import.php}
+      CDR_CRED: ${CDR_CRED:-fusionpbx:fusionpbx}
+    volumes:
+      # Recordings shared with the web container for playback uploads.
+      # Do not mount an empty volume over /etc/freeswitch — that wipes image config.
+      - skykin_recordings:/var/lib/freeswitch/recordings
+      # FusionPBX Lua XML handler. FreeSWITCH calls into this tree on every
+      # directory lookup to authenticate registrations against the database.
+      - ./app/switch/resources/scripts:/usr/share/freeswitch/scripts:ro
+    ports:
+      # SIP (internal 5060, trunk/external 5080)
+      - "${SIP_PORT:-5060}:5060/tcp"
+      - "${SIP_PORT:-5060}:5060/udp"
+      - "${SIP_EXTERNAL_PORT:-5080}:5080/tcp"
+      - "${SIP_EXTERNAL_PORT:-5080}:5080/udp"
+      # Softphone WebSocket (proxied via web /wss/ — also published for debug)
+      - "${FS_WS_PORT:-5066}:5066/tcp"
+      # ESL — keep bound to localhost on the host for safety
+      - "127.0.0.1:${ESL_PUBLISH_PORT:-8021}:8021"
+      # Lab RTP window (widen + prefer host network for real trunks)
+      - "${RTP_START_PORT:-16384}-${RTP_END_PORT:-16584}:${RTP_START_PORT:-16384}-${RTP_END_PORT:-16584}/udp"
+    networks:
+      - skykin
+    restart: unless-stopped
+    # Image healthcheck uses fs_cli with the default ClueCon password and fails
+    # when ESL_PASSWORD is custom. $$ so compose passes $ESL_PASSWORD into the container.
+    healthcheck:
+      test: ["CMD-SHELL", "fs_cli -H 127.0.0.1 -P 8021 -p $$ESL_PASSWORD -x status | grep -q UP || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    # Linux production tip: uncomment the next line and remove the ports: block
+    # so FreeSWITCH owns the host network stack (best for SIP/RTP).
+    # Host-network RTP still needs the cloud security group to allow UDP 16384-16584.
+    # network_mode: host
+
+  web:
+    build: .
+    container_name: skykin-web
+    depends_on:
+      db:
+        condition: service_healthy
+      freeswitch:
+        condition: service_started
+    environment:
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: ${DB_NAME:-fusionpbx}
+      DB_USER: ${DB_USER:-fusionpbx}
+      DB_PASSWORD: ${DB_PASSWORD:-fusionpbx}
+      ESL_HOST: ${ESL_HOST:-freeswitch}
+      ESL_PORT: ${ESL_PORT:-8021}
+      ESL_PASSWORD: ${ESL_PASSWORD:-ClueCon}
+      # SIP/telephony domain the extensions live in (FusionPBX domain name).
+      # Never set this to the public web hostname (e.g. webcc.skyconnectsolutions.et)
+      # or the softphone REGISTERs as 101@webcc… and FreeSWITCH cannot find the user.
+      SKYKIN_DOMAIN: ${SKYKIN_DOMAIN:-${FS_DOMAIN:-}}
+      SKYKIN_TZ: ${SKYKIN_TZ:-Africa/Addis_Ababa}
+      # Must match the freeswitch service's CDR_CRED: FusionPBX validates incoming
+      # CDR posts against this value.
+      CDR_CRED: ${CDR_CRED:-fusionpbx:fusionpbx}
+      FREESWITCH_WS_UPSTREAM: ${FREESWITCH_WS_UPSTREAM:-freeswitch:7443}
+      # WSS listener requires an https upstream so SIP.js's WSS transport works.
+      FREESWITCH_WS_SCHEME: ${FREESWITCH_WS_SCHEME:-https}
+      # Self-signed TLS SANs so the browser cert matches the URL agents use.
+      SERVER_NAME: ${TLS_CN:-skykin.local}
+      TLS_CN: ${TLS_CN:-skykin.local}
+      TLS_SAN_IP: ${TLS_SAN_IP:-}
+      WEB_HTTPS_PORT: ${WEB_HTTPS_PORT:-8443}
+    ports:
+      - "${WEB_PORT:-8080}:80"
+      - "${WEB_HTTPS_PORT:-8443}:443"
+    volumes:
+      - ./app/agent_dashboard:/var/www/fusionpbx/app/agent_dashboard
+      - skykin_recordings:/var/lib/freeswitch/recordings
+    networks:
+      - skykin
+    restart: unless-stopped
+
+networks:
+  skykin:
+    driver: bridge
+    # Other stacks attached to this network (sms-nginx) must not proxy to
+    # service names `web` / `api` — those resolve to this project's containers.
+    # Use unique container_name values (sms-web, sms-api) in those upstreams.
+
+volumes:
+  skykin_pgdata:
+  skykin_recordings:
