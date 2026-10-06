@@ -51,35 +51,39 @@ foreach ($group_rows as $row) {
 }
 
 // rebuild ALL global group permissions from app_config.php
+// Important: each app_config.php writes $apps[$x] — increment $x after every include.
 $database->execute("delete from v_group_permissions where domain_uuid is null", null);
 $apps = [];
 $config_list = glob("/var/www/fusionpbx/{core,app}/*/app_config.php", GLOB_BRACE);
+sort($config_list);
 $x = 0;
 foreach ($config_list as $config_path) {
 	include $config_path;
+	$x++;
 }
 $array = [];
+$i = 0;
 if (is_array($apps)) {
 	foreach ($apps as $app) {
 		if (empty($app["permissions"]) || !is_array($app["permissions"])) {
 			continue;
 		}
 		foreach ($app["permissions"] as $row) {
-			if (empty($row["groups"]) || !is_array($row["groups"])) {
+			if (empty($row["name"]) || empty($row["groups"]) || !is_array($row["groups"])) {
 				continue;
 			}
 			foreach ($row["groups"] as $group) {
 				if (empty($group_uuids[$group])) {
 					continue;
 				}
-				$array["group_permissions"][$x]["group_permission_uuid"] = uuid();
-				$array["group_permissions"][$x]["domain_uuid"] = null;
-				$array["group_permissions"][$x]["permission_name"] = $row["name"];
-				$array["group_permissions"][$x]["permission_protected"] = "false";
-				$array["group_permissions"][$x]["permission_assigned"] = "true";
-				$array["group_permissions"][$x]["group_name"] = $group;
-				$array["group_permissions"][$x]["group_uuid"] = $group_uuids[$group];
-				$x++;
+				$array["group_permissions"][$i]["group_permission_uuid"] = uuid();
+				$array["group_permissions"][$i]["domain_uuid"] = null;
+				$array["group_permissions"][$i]["permission_name"] = $row["name"];
+				$array["group_permissions"][$i]["permission_protected"] = "false";
+				$array["group_permissions"][$i]["permission_assigned"] = "true";
+				$array["group_permissions"][$i]["group_name"] = $group;
+				$array["group_permissions"][$i]["group_uuid"] = $group_uuids[$group];
+				$i++;
 			}
 		}
 	}
