@@ -104,8 +104,9 @@ services:
       # FusionPBX SIP domain only — not the public hostname webcc.skyconnectsolutions.et
       SKYKIN_DOMAIN: ${SKYKIN_DOMAIN:-${FS_DOMAIN:-}}
       CDR_CRED: ${CDR_CRED:-fusionpbx:fusionpbx}
-      FREESWITCH_WS_UPSTREAM: ${FREESWITCH_WS_UPSTREAM:-172.18.0.1:7443}
-      FREESWITCH_WS_SCHEME: ${FREESWITCH_WS_SCHEME:-https}
+      # ws-sip on host :18081 (see scripts/skykin_install_ws_sip.sh). Direct 7443 breaks A2A bridge.
+      FREESWITCH_WS_UPSTREAM: ${FREESWITCH_WS_UPSTREAM:-172.18.0.1:18081}
+      FREESWITCH_WS_SCHEME: ${FREESWITCH_WS_SCHEME:-http}
       SERVER_NAME: ${TLS_CN:-skykin.local}
       TLS_CN: ${TLS_CN:-skykin.local}
       TLS_SAN_IP: ${TLS_SAN_IP:-}

@@ -166,6 +166,10 @@ if [ -f "$INTERNAL" ]; then
       sed -i "s#<param name=\"${p}\" value=\"[^\"]*\"/>#<param name=\"${p}\" value=\"\"/>#" "$INTERNAL" || true
     fi
   done
+  # NDLB-tls-connectile-dysfunction adds fs_path=nginx-ephemeral on WSS registrations;
+  # agent-to-agent bridge then opens a new WSS to that port -> 503. Use ws-sip + clear this.
+  sed -i 's#<param name="sip-force-contact" value="NDLB-tls-connectile-dysfunction"/>#<param name="sip-force-contact" value=""/>#' "$INTERNAL" || true
+  sed -i 's#<param name="apply-nat-acl" value="nat.auto"/>#<param name="apply-nat-acl" value="none"/>#' "$INTERNAL" || true
 fi
 
 VARS=/etc/freeswitch/vars.xml
