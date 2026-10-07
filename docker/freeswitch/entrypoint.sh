@@ -300,7 +300,7 @@ CFGEOF
     # "attempt to concatenate a nil value (global 'scripts_dir')".
     # Same delete-then-insert approach as above to stay idempotent.
     sed -i '/name="xml-handler-script"/d;/name="xml-handler-bindings"/d' "$LUACONF" || true
-    sed -i 's#</settings>#    <param name="xml-handler-script" value="app.lua xml_handler"/>\n    <param name="xml-handler-bindings" value="directory dialplan"/>\n  </settings>#' "$LUACONF" || true
+    sed -i 's#</settings>#    <param name="xml-handler-script" value="app.lua xml_handler"/>\n    <param name="xml-handler-bindings" value="directory"/>\n  </settings>#' "$LUACONF" || true
     sed -i '/skykin_cc_watch/d;/skykin_bl_hash/d' "$LUACONF" || true
     sed -i 's#</settings>#    <param name="startup-script" value="/etc/freeswitch/scripts/skykin_cc_watch.lua"/>\n    <param name="startup-script" value="/etc/freeswitch/scripts/skykin_bl_hash.lua"/>\n  </settings>#' "$LUACONF" || true
     echo "  FusionPBX directory handler enabled (db ${FUSIONPBX_DB_HOST}/${FUSIONPBX_DB_NAME})"
