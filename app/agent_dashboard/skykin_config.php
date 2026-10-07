@@ -1256,8 +1256,6 @@ function skykin_config(): array {
 		'domain'              => skykin_default_domain(),
 		'http_host'           => $host,
 		'sip_server'          => $host,
-		// Client1 clones set SKYKIN_AHUNUNU_URL= to hide Ahununu.com.
-		'ahununu_url'         => getenv('SKYKIN_AHUNUNU_URL') !== false ? (string) getenv('SKYKIN_AHUNUNU_URL') : 'https://ahununu.com/',
 		// Empty = use FusionPBX recordings only (recommended for cloud).
 		'recordings_api_base' => '',
 		// Empty = do not open a Socket.IO connection.
@@ -1275,13 +1273,13 @@ function skykin_config(): array {
 		if (is_file($override)) {
 			$extra = include $override;
 			if (is_array($extra)) {
+				unset($extra['ahununu_url']);
 				$cfg = array_merge($cfg, $extra);
 			}
 		}
 	}
 
 	$map = [
-		'SKYKIN_AHUNUNU_URL'     => 'ahununu_url',
 		'SKYKIN_RECORDINGS_API'  => 'recordings_api_base',
 		'SKYKIN_SOCKET_IO_URL'   => 'socket_io_url',
 		'SKYKIN_SIP_SERVER'      => 'sip_server',
@@ -1290,8 +1288,7 @@ function skykin_config(): array {
 	];
 	foreach ($map as $env => $key) {
 		$val = getenv($env);
-		// Allow empty SKYKIN_AHUNUNU_URL to disable the Ahununu tab.
-		if ($val !== false && ($val !== '' || $env === 'SKYKIN_AHUNUNU_URL')) {
+		if ($val !== false && $val !== '') {
 			$cfg[$key] = $val;
 		}
 	}
@@ -2146,7 +2143,6 @@ function skykin_js_bootstrap(): string {
 		'domain'              => $c['domain'],
 		'httpHost'            => $c['http_host'],
 		'sipServer'           => $c['sip_server'],
-		'ahununuUrl'          => $c['ahununu_url'],
 		'recordingsApiBase'   => rtrim((string)$c['recordings_api_base'], '/'),
 		'socketIoUrl'         => rtrim((string)$c['socket_io_url'], '/'),
 		'smsEnabled'          => !empty($c['sms_enabled']),

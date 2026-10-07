@@ -106,8 +106,6 @@ services:
       CDR_CRED: ${CDR_CRED:-fusionpbx:fusionpbx}
       FREESWITCH_WS_UPSTREAM: ${FREESWITCH_WS_UPSTREAM:-172.18.0.1:7443}
       FREESWITCH_WS_SCHEME: ${FREESWITCH_WS_SCHEME:-https}
-      # Empty disables Ahununu.com tab on client1 clones
-      SKYKIN_AHUNUNU_URL: ${SKYKIN_AHUNUNU_URL:-}
       SERVER_NAME: ${TLS_CN:-skykin.local}
       TLS_CN: ${TLS_CN:-skykin.local}
       TLS_SAN_IP: ${TLS_SAN_IP:-}

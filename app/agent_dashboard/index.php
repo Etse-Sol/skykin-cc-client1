@@ -2853,9 +2853,6 @@ body.phone-open .footer { margin-right: 300px; transition: margin-right 0.3s eas
         <button class="sb-item"        id="sbCrmBtn"         onclick="sidebarNav('crm')">CRM</button>
         <button class="sb-item"        id="sbCallbacksBtn"   onclick="sidebarNav('callbacks')">Callbacks</button>
         <button class="sb-item"        id="sbBlacklistBtn"   onclick="sidebarNav('blacklist')">Blacklist</button>
-        <?php if (!empty(skykin_config()['ahununu_url'])): ?>
-        <button class="sb-item"        id="sbAhununuBtn"     onclick="sidebarNav('ahununu')">Ahununu.com</button>
-        <?php endif; ?>
 
         <?php if ($is_supervisor): ?>
         <div class="sb-divider"></div>
@@ -2888,9 +2885,6 @@ body.phone-open .footer { margin-right: 300px; transition: margin-right 0.3s eas
             <button class="tab-btn" id="tabCrmBtn" onclick="switchTab('crm')">CRM</button>
             <button class="tab-btn" id="tabCallbacksBtn" onclick="switchTab('callbacks')">Callbacks</button>
             <button class="tab-btn" id="tabBlacklistBtn" onclick="switchTab('blacklist')">Blacklist</button>
-            <?php if (!empty(skykin_config()['ahununu_url'])): ?>
-            <button class="tab-btn" id="tabAhununuBtn" onclick="switchTab('ahununu')">&#127760; Ahununu.com</button>
-            <?php endif; ?>
         </div>
 
         <!-- ?? Dashboard Tab (landing overview) ?? -->
@@ -3341,11 +3335,6 @@ body.phone-open .footer { margin-right: 300px; transition: margin-right 0.3s eas
         <!-- CRM Tab -->
         <div class="tab-panel" id="tabCrm" style="display:none;padding:0">
             <iframe src="about:blank" id="crmTabFrame" title="CRM" style="width:100%;height:700px;border:none"></iframe>
-        </div>
-
-        <!-- ?? Ahununu.com Tab ?? -->
-        <div class="tab-panel" id="tabAhununu" style="display:none;padding:0">
-            <iframe src="about:blank" id="ahununuFrame" style="width:100%;height:700px;border:none" allow="camera;microphone"></iframe>
         </div>
         </div>
     </div>
@@ -3991,7 +3980,7 @@ function sidebarNav(tab) {
         dashboard: 'sbDashboardBtn', callHistory: 'sbCallHistoryBtn',
         recordings: 'sbRecordingsBtn', acw: 'sbAcwBtn',
         escalation: 'sbEscalationBtn', lookup: 'sbLookupBtn', crm: 'sbCrmBtn',
-        callbacks: 'sbCallbacksBtn', blacklist: 'sbBlacklistBtn', ahununu: 'sbAhununuBtn'
+        callbacks: 'sbCallbacksBtn', blacklist: 'sbBlacklistBtn'
     };
     document.querySelectorAll('.sb-item').forEach(el => el.classList.remove('active'));
     const activeBtn = document.getElementById(tabToSb[tab]);
@@ -4026,9 +4015,7 @@ function agentCrmUrl() {
     return '/app/agent_dashboard/crm.php?' + params.toString();
 }
 
-// ?? Customer info panel (ahununu.com) ??????????????
-// Slides in over the dashboard during a call; the Ahununu tab is the
-// full-size view for browsing between calls.
+// Customer CRM panel (slides in during a call; CRM tab is the full view).
 function openCrmPanel(url) {
     const target = url || agentCrmUrl();
     if (target.indexOf('crm.php') !== -1) {
@@ -4052,7 +4039,7 @@ function closeCrmPanel() {
 
 // ?? Tabs ???????????????????????????????????????????
 function switchTab(tab) {
-    ['dashboard','callHistory','recordings','acw','escalation','lookup','crm','callbacks','blacklist','ahununu'].forEach(t => {
+    ['dashboard','callHistory','recordings','acw','escalation','lookup','crm','callbacks','blacklist'].forEach(t => {
         const panel = document.getElementById('tab' + t.charAt(0).toUpperCase() + t.slice(1));
         const btn   = document.getElementById('tab' + t.charAt(0).toUpperCase() + t.slice(1) + 'Btn');
         if (panel) { panel.classList.remove('active'); panel.style.display = 'none'; }
@@ -4070,10 +4057,6 @@ function switchTab(tab) {
     if (tab === 'crm') {
         const f = document.getElementById('crmTabFrame');
         if (f && (f.src === 'about:blank' || !f.src)) f.src = agentCrmUrl();
-    }
-    if (tab === 'ahununu') {
-        const f = document.getElementById('ahununuFrame');
-        if (f && f.src === 'about:blank') f.src = (window.SKYKIN && SKYKIN.ahununuUrl) || 'https://ahununu.com/';
     }
 }
 
@@ -4874,7 +4857,7 @@ window.resetMissedRing = resetMissedRing;
 function answerCall() {
     document.getElementById('incomingOverlay').style.display = 'none';
     if (sipBridge.answer) sipBridge.answer();
-    // Do not auto-open ahununu.com — agent opens it manually via the Ahununu tab
+    // Do not auto-open CRM — agent opens it manually via the CRM tab
 }
 
 function declineCall() {
@@ -6380,7 +6363,7 @@ if (document.getElementById('caseIssueType')) {
 <!-- CRM slide-in panel -->
 <div class="crm-panel" id="crmPanel">
     <div class="crm-panel-header">
-        <span>&#128100; Customer Info — ahununu.com</span>
+        <span>&#128100; Customer Info</span>
         <button onclick="closeCrmPanel()">&#10005; Close</button>
     </div>
     <iframe id="crmFrame" src="about:blank" allow="camera;microphone"></iframe>

@@ -157,12 +157,12 @@ if (isset($_GET['drain']) || isset($_POST['drain'])) {
                 $called_at = '';
                 if (preg_match('/^\d{4}-\d{2}-\d{2}/', $parts[0] ?? '')) {
                     $called_at = $parts[0] ?? '';
-                    $domain = $parts[1] ?? 'ahununu';
+                    $domain = $parts[1] ?? 'client1.skykin.local';
                     $phone = $parts[2] ?? '';
                     $did = $parts[3] ?? '';
                     $uuid = $parts[4] ?? '';
                 } else {
-                    $domain = $parts[0] ?? 'ahununu';
+                    $domain = $parts[0] ?? 'client1.skykin.local';
                     $phone = $parts[1] ?? '';
                     $did = $parts[2] ?? '';
                     $uuid = $parts[3] ?? '';

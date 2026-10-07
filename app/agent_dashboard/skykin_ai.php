@@ -345,7 +345,7 @@ function skykin_ai_chat_json(string $system, string $user): array {
 /** @return array{ok:bool,disposition?:string,call_reason?:string,notes?:string,transcript?:string,error?:string} */
 function skykin_ai_acw_draft(string $transcript, string $callerId = '', string $callType = '', int $duration = 0): array {
     $system = <<<'SYS'
-You are a call-center wrap-up assistant for SkyKin / Ahununu (Ethiopia).
+You are a call-center wrap-up assistant for SkyKin (Ethiopia).
 Given a call transcript, return JSON only with keys:
 - disposition: one of Resolved, Follow-Up, Escalated, Completed Normally, Invalid
 - call_reason: short label (max 40 chars), e.g. Billing, Order status, Complaint

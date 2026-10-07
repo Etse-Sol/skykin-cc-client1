@@ -123,7 +123,7 @@ function applyAgentCcStatus($db, $agent_ext, $new_status, $domain_) {
         return ['ok' => false, 'error' => 'No domain found'];
     }
     $pat = '%/' . $agent_ext . '@%';
-    // Update EVERY matching CC agent — ahununu can have duplicate rows / FS entries
+    // Update EVERY matching CC agent — domains can have duplicate rows / FS entries
     // for the same user/EXT@domain (e.g. UUID agent + name "201").
     $s_agent = $db->prepare(
         "SELECT call_center_agent_uuid, agent_name
@@ -1472,7 +1472,6 @@ body.phone-open .main{margin-right:300px;transition:margin-right .3s ease}
         <a href="#" class="sup-side-link" data-side-tab="lookup" onclick="event.preventDefault();toggleSideMenu();showTab('lookup')">Customer Lookup</a>
         <a href="#" class="sup-side-link" data-side-tab="ticket" onclick="event.preventDefault();toggleSideMenu();showTab('ticket')">New Ticket</a>
         <a href="#" class="sup-side-link" data-side-tab="callbacks" onclick="event.preventDefault();toggleSideMenu();showTab('callbacks')">Callbacks</a>
-        <a href="#" class="sup-side-link" data-side-tab="ahununu" onclick="event.preventDefault();toggleSideMenu();showTab('ahununu')">Ahununu.com</a>
         <div style="height:1px;background:#eee;margin:8px 0"></div>
         <div class="sup-side-label">Management</div>
         <a href="#" class="sup-side-link" data-side-tab="reports" onclick="event.preventDefault();toggleSideMenu();showTab('reports')">Reports</a>
@@ -1790,9 +1789,6 @@ body.phone-open .main{margin-right:300px;transition:margin-right .3s ease}
         </div>
         <div class="tab-content" id="tab-evaluation" style="padding:0;height:700px">
             <iframe src="about:blank" id="evaluationFrame" title="Evaluation" style="width:100%;height:100%;border:none;border-radius:0 0 8px 8px"></iframe>
-        </div>
-        <div class="tab-content" id="tab-ahununu" style="padding:0;height:700px">
-            <iframe src="about:blank" id="ahununuFrame" style="width:100%;height:100%;border:none;border-radius:0 0 8px 8px" allow="camera;microphone"></iframe>
         </div>
 
     </div>
@@ -2541,10 +2537,6 @@ function showTab(name){
     if(name==='lookup') loadSupervisorEmbed('lookupFrame', supervisorToolsUrl('lookup'));
     if(name==='ticket') loadSupervisorEmbed('ticketFrame', supervisorToolsUrl('ticket'));
     if(name==='callbacks') loadSupervisorEmbed('callbacksFrame', supervisorToolsUrl('callbacks'));
-    if(name==='ahununu') {
-        const f = document.getElementById('ahununuFrame');
-        if (f.src === 'about:blank') f.src = (window.SKYKIN && SKYKIN.ahununuUrl) || 'https://ahununu.com/';
-    }
 }
 
 function showTabDirect(name){
@@ -2566,10 +2558,6 @@ function showTabDirect(name){
     if(name==='lookup') loadSupervisorEmbed('lookupFrame', supervisorToolsUrl('lookup'));
     if(name==='ticket') loadSupervisorEmbed('ticketFrame', supervisorToolsUrl('ticket'));
     if(name==='callbacks') loadSupervisorEmbed('callbacksFrame', supervisorToolsUrl('callbacks'));
-    if(name==='ahununu') {
-        const f = document.getElementById('ahununuFrame');
-        if (f && f.src === 'about:blank') f.src = (window.SKYKIN && SKYKIN.ahununuUrl) || 'https://ahununu.com/';
-    }
 }
 
 function loadIdleSettings(){
