@@ -200,6 +200,1208 @@ function skykin_crm_ensure_contacts(PDO $db): void {
 			updated_at    TIMESTAMP DEFAULT NOW()
 		)");
 	}
+	// Customer 360 profile fields (safe to re-run)
+	$cols = [
+		'fayda_verified' => $isSqlite ? "INTEGER DEFAULT 0" : "SMALLINT DEFAULT 0",
+		'csat' => $isSqlite ? "REAL" : "NUMERIC(3,1)",
+		'sentiment' => "TEXT DEFAULT 'Neutral'",
+		'products' => "TEXT DEFAULT ''",
+	];
+	foreach ($cols as $col => $type) {
+		try {
+			if ($isSqlite) {
+				$chk = $db->query("PRAGMA table_info(skykin_contacts)")->fetchAll(PDO::FETCH_ASSOC);
+				$have = false;
+				foreach ($chk as $c) {
+					if (($c['name'] ?? '') === $col) {
+						$have = true;
+						break;
+					}
+				}
+				if (!$have) {
+					$db->exec("ALTER TABLE skykin_contacts ADD COLUMN {$col} {$type}");
+				}
+			} else {
+				$db->exec("ALTER TABLE skykin_contacts ADD COLUMN IF NOT EXISTS {$col} {$type}");
+			}
+		} catch (Throwable $e) {
+			/* ignore */
+		}
+	}
+}
+
+/** Multi-channel journey events for Customer 360 history track. */
+function skykin_crm_ensure_journey(PDO $db): void {
+	$isSqlite = ($db->getAttribute(PDO::ATTR_DRIVER_NAME) === 'sqlite');
+	if ($isSqlite) {
+		$db->exec("CREATE TABLE IF NOT EXISTS skykin_journey_events (
+			event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+			phone TEXT NOT NULL,
+			event_at DATETIME NOT NULL,
+			channel TEXT NOT NULL,
+			summary TEXT NOT NULL,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		)");
+	} else {
+		$db->exec("CREATE TABLE IF NOT EXISTS skykin_journey_events (
+			event_id SERIAL PRIMARY KEY,
+			phone TEXT NOT NULL,
+			event_at TIMESTAMP NOT NULL,
+			channel TEXT NOT NULL,
+			summary TEXT NOT NULL,
+			created_at TIMESTAMP DEFAULT NOW()
+		)");
+		try {
+			$db->exec("CREATE INDEX IF NOT EXISTS skykin_journey_phone_idx ON skykin_journey_events (phone)");
+		} catch (Throwable $e) {
+			/* ignore */
+		}
+	}
+}
+
+/** Agent knowledge base articles (scripts / policies). */
+function skykin_crm_ensure_knowledge(PDO $db): void {
+	$isSqlite = ($db->getAttribute(PDO::ATTR_DRIVER_NAME) === 'sqlite');
+	if ($isSqlite) {
+		$db->exec("CREATE TABLE IF NOT EXISTS skykin_knowledge (
+			article_id INTEGER PRIMARY KEY AUTOINCREMENT,
+			title TEXT NOT NULL,
+			tag TEXT DEFAULT 'Guide',
+			body TEXT NOT NULL,
+			keywords TEXT,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		)");
+	} else {
+		$db->exec("CREATE TABLE IF NOT EXISTS skykin_knowledge (
+			article_id SERIAL PRIMARY KEY,
+			title VARCHAR(200) NOT NULL,
+			tag VARCHAR(40) DEFAULT 'Guide',
+			body TEXT NOT NULL,
+			keywords TEXT,
+			updated_at TIMESTAMP DEFAULT NOW()
+		)");
+	}
+}
+
+/**
+ * Seed starter Ethio / SkyConnect articles if the KB is empty.
+ * @return int number inserted
+ */
+function skykin_crm_seed_knowledge(PDO $db): int {
+	skykin_crm_ensure_knowledge($db);
+	$cnt = (int)$db->query('SELECT COUNT(*) FROM skykin_knowledge')->fetchColumn();
+	if ($cnt > 0) {
+		return 0;
+	}
+	$articles = [
+		[
+			'SIM swap with Fayda OTP',
+			'Updated',
+			"1. Greet and verify the caller (name + Fayda / ID).\n"
+			. "2. Confirm the number is registered to them and the phone is lost or stolen.\n"
+			. "3. Send Fayda OTP and wait for the customer to read it back.\n"
+			. "4. Block the old SIM, then issue a replacement SIM.\n"
+			. "5. Confirm telebirr and packages will restore after activation.\n"
+			. "6. Offer SMS confirmation and set Follow-up if OTP fails.",
+			'sim swap fayda otp lost stolen identity',
+		],
+		[
+			'telebirr daily limit',
+			'Popular',
+			"1. Confirm the telebirr wallet number and recent failed transfer.\n"
+			. "2. Explain daily / transaction limits for their account tier.\n"
+			. "3. Check whether the limit reset time has passed (usually midnight EAT).\n"
+			. "4. If within policy, guide them to retry or split the transfer.\n"
+			. "5. Escalate only if the limit looks wrong after Fayda verification.",
+			'telebirr limit transfer pin wallet',
+		],
+		[
+			'Lost or stolen phone checklist',
+			'Guide',
+			"1. Advise immediate SIM block / barring.\n"
+			. "2. Capture IMEI if the customer has it (box or settings).\n"
+			. "3. Start SIM swap with Fayda OTP when they have a replacement handset.\n"
+			. "4. Warn about telebirr PIN change if the old phone may be unlocked.\n"
+			. "5. Log call reason: Lost or stolen phone · Follow-up until SIM is active.",
+			'lost stolen phone imei block sim',
+		],
+		[
+			'Package dispute handling',
+			'Guide',
+			"1. Confirm package name, purchase time, and amount deducted.\n"
+			. "2. Check whether the package activated on the wrong number.\n"
+			. "3. If not delivered within SLA, open a case with Outcome Escalated.\n"
+			. "4. Do not promise refunds — note the case ID for the customer.\n"
+			. "5. Offer a temporary courtesy data tip only if policy allows.",
+			'package dispute billing data unexpected charge',
+		],
+		[
+			'Greeting and identity verification',
+			'Script',
+			"Hello, thank you for calling SkyConnect. My name is [Agent]. "
+			. "May I have your full name and the number you are calling about?\n"
+			. "For your security I will verify with Fayda / ID before making account changes.",
+			'greeting verify identity fayda script',
+		],
+	];
+	$ins = $db->prepare(
+		'INSERT INTO skykin_knowledge (title, tag, body, keywords) VALUES (:t,:g,:b,:k)'
+	);
+	$n = 0;
+	foreach ($articles as $a) {
+		$ins->execute([':t' => $a[0], ':g' => $a[1], ':b' => $a[2], ':k' => $a[3]]);
+		$n++;
+	}
+	return $n;
+}
+
+function skykin_crm_knowledge_tokens(string $q): array {
+	$q = skykin_crm_knowledge_lower(trim($q));
+	$q = preg_replace('/[^\p{L}\p{N}\s]+/u', ' ', $q) ?? $q;
+	$stop = ['the','a','an','is','are','am','do','does','how','what','when','where','why','can','i','my','me','to','for','of','on','in','it','please','want','need','help','this','that','you','we','and','or','agent','customer'];
+	$out = [];
+	foreach (preg_split('/\s+/u', $q) ?: [] as $w) {
+		$n = function_exists('mb_strlen') ? mb_strlen($w) : strlen($w);
+		if ($w === '' || in_array($w, $stop, true) || ($n < 2 && !preg_match('/^\d+$/', $w))) {
+			continue;
+		}
+		$out[] = $w;
+	}
+	return array_values(array_unique($out));
+}
+
+/** Map English + Amharic spoken forms onto the same articles. */
+function skykin_crm_knowledge_synonym_groups(): array {
+	return [
+		['stolen', 'steal', 'stole', 'theft', 'lost', 'imei', 'ተሰረቀ', 'ተሰርቋል', 'የተሰረቀ', 'ስርቆት', 'ጠፍቷል', 'ጠፋ', 'ጠፍቶ'],
+		['sim', 'sims', 'swap', 'ሲም', 'ሲምካርድ', 'ምትክ', 'ስልክ'],
+		['telebirr', 'wallet', 'ቴሌብር', 'ፒን'],
+		['fayda', 'otp', 'ፋይዳ', 'መታወቂያ', 'ሰላም'],
+		['package', 'billing', 'ፓኬጅ', 'ዳታ', 'ቀሪ'],
+	];
+}
+
+function skykin_crm_knowledge_expand_tokens(array $tokens): array {
+	$out = $tokens;
+	foreach (skykin_crm_knowledge_synonym_groups() as $group) {
+		$hit = false;
+		foreach ($tokens as $t) {
+			foreach ($group as $g) {
+				if ($t === $g) {
+					$hit = true;
+					break 2;
+				}
+			}
+		}
+		if ($hit) {
+			foreach ($group as $g) {
+				$out[] = $g;
+			}
+		}
+	}
+	return array_values(array_unique($out));
+}
+
+function skykin_crm_knowledge_excerpt(string $body, int $len = 180): string {
+	$body = trim(preg_replace('/\s+/', ' ', $body) ?? $body);
+	if (function_exists('mb_substr')) {
+		return mb_strlen($body) <= $len ? $body : rtrim(mb_substr($body, 0, $len)) . '…';
+	}
+	return strlen($body) <= $len ? $body : rtrim(substr($body, 0, $len)) . '…';
+}
+
+function skykin_crm_knowledge_lower(string $s): string {
+	return function_exists('mb_strtolower') ? mb_strtolower($s) : strtolower($s);
+}
+
+/**
+ * Knowledge search used by skyconnect_ops.php?op=knowledge (and SPA Knowledge page).
+ * Returns {ok, articles[]} plus {article} when $id > 0.
+ */
+function skykin_crm_knowledge_amharic_keywords(PDO $db): void {
+	static $done = false;
+	if ($done) {
+		return;
+	}
+	$done = true;
+	try {
+		$rows = $db->query('SELECT article_id, title, keywords FROM skykin_knowledge')->fetchAll(PDO::FETCH_ASSOC);
+		$upd = $db->prepare('UPDATE skykin_knowledge SET keywords = :k WHERE article_id = :id');
+		foreach ($rows as $r) {
+			$kw = (string)($r['keywords'] ?? '');
+			$hay = skykin_crm_knowledge_lower((string)$r['title'] . ' ' . $kw);
+			$extra = '';
+			if (strpos($hay, 'sim') !== false || strpos($hay, 'stolen') !== false || strpos($hay, 'lost') !== false) {
+				$extra .= ' stolen steal lost imei ሲም ሲምካርድ ምትክ ጠፍቷል ጠፋ ተሰርቋል ተሰረቀ የተሰረቀ ስርቆት ስልክ';
+			}
+			if (strpos($hay, 'telebirr') !== false || strpos($hay, 'pin') !== false) {
+				$extra .= ' ቴሌብር ፒን ገንዘብ';
+			}
+			if (strpos($hay, 'fayda') !== false || strpos($hay, 'greeting') !== false) {
+				$extra .= ' ፋይዳ መታወቂያ ሰላም';
+			}
+			if (strpos($hay, 'package') !== false) {
+				$extra .= ' ፓኬጅ ቀሪ ዳታ';
+			}
+			if ($extra === '') {
+				continue;
+			}
+			$merged = trim($kw . ' ' . $extra);
+			$parts = preg_split('/\s+/u', $merged) ?: [];
+			$uniq = [];
+			foreach ($parts as $p) {
+				if ($p !== '' && !in_array($p, $uniq, true)) {
+					$uniq[] = $p;
+				}
+			}
+			$next = implode(' ', $uniq);
+			if ($next === $kw) {
+				continue;
+			}
+			$upd->execute([':k' => $next, ':id' => $r['article_id']]);
+		}
+	} catch (Throwable $e) {
+		// ignore
+	}
+}
+
+function skykin_crm_search_knowledge(PDO $db, string $q = '', int $id = 0): array {
+	skykin_crm_ensure_knowledge($db);
+	try {
+		skykin_crm_seed_knowledge($db);
+	} catch (Throwable $e) {
+		// seed is best-effort
+	}
+	try {
+		skykin_crm_knowledge_amharic_keywords($db);
+	} catch (Throwable $e) {
+		// ignore
+	}
+	if ($id > 0) {
+		$s = $db->prepare(
+			'SELECT article_id, title, tag, body, keywords, updated_at FROM skykin_knowledge WHERE article_id = :id LIMIT 1'
+		);
+		$s->execute([':id' => $id]);
+		$row = $s->fetch(PDO::FETCH_ASSOC);
+		if ($row) {
+			$row['excerpt'] = skykin_crm_knowledge_excerpt((string)$row['body']);
+		}
+		return ['ok' => true, 'article' => $row ?: null, 'articles' => $row ? [$row] : []];
+	}
+	$rows = $db->query(
+		'SELECT article_id, title, tag, body, keywords, updated_at FROM skykin_knowledge ORDER BY updated_at DESC LIMIT 80'
+	)->fetchAll(PDO::FETCH_ASSOC);
+	$q = trim($q);
+	if ($q === '') {
+		foreach ($rows as &$r) {
+			$r['excerpt'] = skykin_crm_knowledge_excerpt((string)$r['body']);
+			unset($r['body']);
+			$r['score'] = 0;
+		}
+		unset($r);
+		return ['ok' => true, 'articles' => $rows];
+	}
+	$ql = skykin_crm_knowledge_lower($q);
+	$tokens = skykin_crm_knowledge_expand_tokens(skykin_crm_knowledge_tokens($q));
+	$scored = [];
+	foreach ($rows as $r) {
+		$title = skykin_crm_knowledge_lower((string)$r['title']);
+		$body = skykin_crm_knowledge_lower((string)$r['body']);
+		$kw = skykin_crm_knowledge_lower((string)($r['keywords'] ?? ''));
+		$tag = skykin_crm_knowledge_lower((string)($r['tag'] ?? ''));
+		$hay = $title . ' ' . $tag . ' ' . $kw . ' ' . $body;
+		$score = 0;
+		if ($ql !== '' && strpos($hay, $ql) !== false) {
+			$score += 50;
+		}
+		if (strpos($title, $ql) !== false) {
+			$score += 40;
+		}
+		foreach ($tokens as $t) {
+			if (strpos($title, $t) !== false) {
+				$score += 12;
+			}
+			if (strpos($kw, $t) !== false || strpos($tag, $t) !== false) {
+				$score += 10;
+			}
+			if (strpos($body, $t) !== false) {
+				$score += 3;
+			}
+		}
+		if ($score <= 0) {
+			continue;
+		}
+		$r['excerpt'] = skykin_crm_knowledge_excerpt((string)$r['body']);
+		$r['score'] = $score;
+		$scored[] = $r;
+	}
+	usort($scored, static function ($a, $b) {
+		return ($b['score'] <=> $a['score']);
+	});
+	$out = array_slice($scored, 0, 20);
+	foreach ($out as &$r) {
+		unset($r['body']);
+	}
+	unset($r);
+	return ['ok' => true, 'articles' => $out];
+}
+
+function skykin_learn_skills(): array {
+	return [
+		'greeting' => 'Greeting',
+		'knowledge' => 'Knowledge',
+		'resolution' => 'Resolution',
+		'tone' => 'Tone / empathy',
+		'procedure' => 'Procedure',
+		'closing' => 'Closing',
+	];
+}
+
+function skykin_learn_ensure(PDO $db): void {
+	$isSqlite = ($db->getAttribute(PDO::ATTR_DRIVER_NAME) === 'sqlite');
+	if ($isSqlite) {
+		$db->exec("CREATE TABLE IF NOT EXISTS skykin_learn_courses (
+			course_id INTEGER PRIMARY KEY AUTOINCREMENT,
+			domain_name TEXT DEFAULT '',
+			skill_key TEXT NOT NULL,
+			title TEXT NOT NULL,
+			body TEXT NOT NULL,
+			quiz_json TEXT DEFAULT '[]',
+			created_by TEXT,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		)");
+		$db->exec("CREATE TABLE IF NOT EXISTS skykin_learn_assign (
+			assign_id INTEGER PRIMARY KEY AUTOINCREMENT,
+			domain_name TEXT,
+			agent_ext TEXT,
+			agent_name TEXT,
+			course_id INTEGER,
+			source TEXT DEFAULT 'evaluation',
+			status TEXT DEFAULT 'assigned',
+			last_pct INTEGER DEFAULT 0,
+			assigned_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			completed_at DATETIME
+		)");
+		$db->exec("CREATE TABLE IF NOT EXISTS skykin_learn_attempts (
+			attempt_id INTEGER PRIMARY KEY AUTOINCREMENT,
+			assign_id INTEGER,
+			pct INTEGER DEFAULT 0,
+			passed INTEGER DEFAULT 0,
+			taken_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		)");
+	} else {
+		$db->exec("CREATE TABLE IF NOT EXISTS skykin_learn_courses (
+			course_id SERIAL PRIMARY KEY,
+			domain_name TEXT DEFAULT '',
+			skill_key TEXT NOT NULL,
+			title TEXT NOT NULL,
+			body TEXT NOT NULL,
+			quiz_json TEXT DEFAULT '[]',
+			created_by TEXT,
+			created_at TIMESTAMP DEFAULT NOW()
+		)");
+		$db->exec("CREATE TABLE IF NOT EXISTS skykin_learn_assign (
+			assign_id SERIAL PRIMARY KEY,
+			domain_name TEXT,
+			agent_ext TEXT,
+			agent_name TEXT,
+			course_id INTEGER,
+			source TEXT DEFAULT 'evaluation',
+			status TEXT DEFAULT 'assigned',
+			last_pct INTEGER DEFAULT 0,
+			assigned_at TIMESTAMP DEFAULT NOW(),
+			completed_at TIMESTAMP
+		)");
+		$db->exec("CREATE TABLE IF NOT EXISTS skykin_learn_attempts (
+			attempt_id SERIAL PRIMARY KEY,
+			assign_id INTEGER,
+			pct INTEGER DEFAULT 0,
+			passed SMALLINT DEFAULT 0,
+			taken_at TIMESTAMP DEFAULT NOW()
+		)");
+	}
+	try {
+		$db->exec('CREATE UNIQUE INDEX IF NOT EXISTS skykin_learn_assign_uniq ON skykin_learn_assign (domain_name, agent_ext, course_id)');
+	} catch (Throwable $e) {
+		/* ignore */
+	}
+	skykin_learn_seed($db);
+}
+
+function skykin_learn_seed(PDO $db): void {
+	$n = (int)$db->query('SELECT COUNT(*) FROM skykin_learn_courses')->fetchColumn();
+	if ($n > 0) {
+		return;
+	}
+	$courses = [
+		['greeting', 'Clear greeting and identity', "1. Greet with your name and SkyConnect.\n2. Confirm the caller’s name and number.\n3. Do not skip Fayda / ID before account changes.", [
+			['q' => 'A live call should start with:', 'choices' => ['A silent hold', 'Your name and the company', 'A transfer', 'Asking for PIN first'], 'answer' => 1],
+			['q' => 'Before changing an account you must:', 'choices' => ['Guess the caller', 'Verify identity (Fayda / ID)', 'End the call', 'Mute the line'], 'answer' => 1],
+		]],
+		['knowledge', 'Product knowledge on the call', "1. Confirm the product (SIM, telebirr, package).\n2. Use the knowledge articles — do not invent policy.\n3. Repeat the next step in plain language.", [
+			['q' => 'If you are unsure of a policy you should:', 'choices' => ['Invent a rule', 'Use the knowledge base', 'Hang up', 'Ask them to call later only'], 'answer' => 1],
+			['q' => 'Lost or stolen phone first step is usually:', 'choices' => ['Ignore IMEI', 'Block / bar the SIM', 'Reset the wallboard', 'Change branding'], 'answer' => 1],
+		]],
+		['resolution', 'Resolve or escalate cleanly', "1. Restate the issue.\n2. Complete the fix or open a case.\n3. Give a case ID and follow-up if it is not finished now.", [
+			['q' => 'If you cannot finish the request now:', 'choices' => ['Say nothing', 'Open a case and share the ID', 'Promise a refund always', 'Transfer with no notes'], 'answer' => 1],
+			['q' => 'A good close of the problem is:', 'choices' => ['Leave them guessing', 'Confirm what was done and what happens next', 'Mute', 'End without summary'], 'answer' => 1],
+		]],
+		['tone', 'Tone and empathy', "1. Let the caller finish.\n2. Acknowledge the inconvenience.\n3. Stay calm even if they are frustrated.", [
+			['q' => 'When a caller is upset you should:', 'choices' => ['Talk over them', 'Acknowledge and stay calm', 'Laugh', 'End immediately'], 'answer' => 1],
+			['q' => 'Empathy on a call means:', 'choices' => ['Ignoring the issue', 'Showing you heard the impact, then helping', 'Raising your voice', 'Putting them on hold forever'], 'answer' => 1],
+		]],
+		['procedure', 'Follow the procedure', "1. Use the script order: greet → verify → fix → confirm.\n2. Log the call reason.\n3. Never skip OTP / Fayda when the process requires it.", [
+			['q' => 'SIM swap without Fayda OTP is:', 'choices' => ['Allowed always', 'Against procedure', 'Faster and preferred', 'Only for supervisors to skip silently'], 'answer' => 1],
+			['q' => 'After the call you should:', 'choices' => ['Skip wrap-up', 'Log the call reason', 'Delete the CDR', 'Change the DID map'], 'answer' => 1],
+		]],
+		['closing', 'Strong call close', "1. Summarise what you did.\n2. Ask if anything else is needed.\n3. Thank them and confirm SMS / next step if promised.", [
+			['q' => 'A complete close includes:', 'choices' => ['Just hanging up', 'A short summary and a check if they need anything else', 'A new random transfer', 'Silence'], 'answer' => 1],
+			['q' => 'If you promised an SMS you should:', 'choices' => ['Forget it', 'Send or schedule it before wrap-up', 'Ask them to invent one', 'Only mention it next week'], 'answer' => 1],
+		]],
+	];
+	$ins = $db->prepare('INSERT INTO skykin_learn_courses (domain_name, skill_key, title, body, quiz_json, created_by) VALUES (:d,:k,:t,:b,:q,:c)');
+	foreach ($courses as $c) {
+		$ins->execute([
+			':d' => '',
+			':k' => $c[0],
+			':t' => $c[1],
+			':b' => $c[2],
+			':q' => json_encode($c[3], JSON_UNESCAPED_UNICODE),
+			':c' => 'system',
+		]);
+	}
+}
+
+function skykin_learn_decode_quiz(string $raw): array {
+	$j = json_decode($raw, true);
+	return is_array($j) ? $j : [];
+}
+
+function skykin_learn_public_quiz(array $quiz): array {
+	$out = [];
+	foreach ($quiz as $i => $row) {
+		if (!is_array($row)) {
+			continue;
+		}
+		$out[] = [
+			'i' => $i,
+			'q' => (string)($row['q'] ?? ''),
+			'choices' => array_values(array_map('strval', is_array($row['choices'] ?? null) ? $row['choices'] : [])),
+		];
+	}
+	return $out;
+}
+
+function skykin_learn_assign_one(PDO $db, string $dom, string $ext, string $name, int $courseId, string $source): bool {
+	$ext = trim($ext);
+	if ($ext === '' || $courseId < 1) {
+		return false;
+	}
+	$chk = $db->prepare('SELECT assign_id, status FROM skykin_learn_assign WHERE domain_name=:d AND agent_ext=:e AND course_id=:c LIMIT 1');
+	$chk->execute([':d' => $dom, ':e' => $ext, ':c' => $courseId]);
+	$row = $chk->fetch(PDO::FETCH_ASSOC);
+	if ($row) {
+		if (($row['status'] ?? '') === 'passed') {
+			return false;
+		}
+		return true;
+	}
+	$ins = $db->prepare('INSERT INTO skykin_learn_assign (domain_name, agent_ext, agent_name, course_id, source, status) VALUES (:d,:e,:n,:c,:s,\'assigned\')');
+	$ins->execute([':d' => $dom, ':e' => $ext, ':n' => $name !== '' ? $name : $ext, ':c' => $courseId, ':s' => $source]);
+	return true;
+}
+
+function skykin_learn_recommend_from_eval(PDO $db, string $dom, string $ext, string $name, array $scores): array {
+	skykin_learn_ensure($db);
+	$ext = trim($ext);
+	$assigned = [];
+	if ($ext === '') {
+		return $assigned;
+	}
+	foreach (skykin_learn_skills() as $key => $label) {
+		$v = (int)($scores[$key] ?? $scores['score_' . $key] ?? 0);
+		if ($v < 1 || $v >= 4) {
+			continue;
+		}
+		$find = $db->prepare("SELECT course_id FROM skykin_learn_courses WHERE skill_key=:k AND (domain_name=:d OR domain_name='' OR domain_name IS NULL) ORDER BY course_id DESC LIMIT 1");
+		$find->execute([':k' => $key, ':d' => $dom]);
+		$id = (int)$find->fetchColumn();
+		if ($id > 0 && skykin_learn_assign_one($db, $dom, $ext, $name, $id, 'evaluation')) {
+			$assigned[] = ['skill' => $label, 'course_id' => $id];
+		}
+	}
+	return $assigned;
+}
+
+function skykin_learn_agent_pack(PDO $db, string $dom, string $ext): array {
+	skykin_learn_ensure($db);
+	$q = $db->prepare("SELECT a.assign_id, a.course_id, a.source, a.status, a.last_pct, a.assigned_at, a.completed_at,
+		c.title, c.skill_key, c.body, c.quiz_json
+		FROM skykin_learn_assign a
+		JOIN skykin_learn_courses c ON c.course_id = a.course_id
+		WHERE a.domain_name=:d AND a.agent_ext=:e
+		ORDER BY a.assigned_at DESC");
+	$q->execute([':d' => $dom, ':e' => $ext]);
+	$rows = $q->fetchAll(PDO::FETCH_ASSOC);
+	foreach ($rows as &$r) {
+		$r['skill'] = skykin_learn_skills()[$r['skill_key'] ?? ''] ?? (string)$r['skill_key'];
+		$r['quiz_count'] = count(skykin_learn_decode_quiz((string)($r['quiz_json'] ?? '')));
+		unset($r['quiz_json']);
+	}
+	unset($r);
+	$done = 0;
+	foreach ($rows as $r) {
+		if (($r['status'] ?? '') === 'passed') {
+			$done++;
+		}
+	}
+	return [
+		'assignments' => $rows,
+		'assigned' => count($rows),
+		'passed' => $done,
+		'pct' => count($rows) ? (int)round($done / count($rows) * 100) : 0,
+	];
+}
+
+/**
+ * Live-call coach: match stored knowledge to transcript, optionally phrase the next line with AI.
+ * @return array{ok:bool,articles:array,say_next?:string,why?:string,ai?:bool}
+ */
+function skykin_crm_suggest_from_transcript(PDO $db, string $transcript): array {
+	$q = trim($transcript);
+	if (function_exists('mb_substr')) {
+		$q = mb_strlen($q) > 900 ? mb_substr($q, -900) : $q;
+	} elseif (strlen($q) > 900) {
+		$q = substr($q, -900);
+	}
+	$found = skykin_crm_search_knowledge($db, $q, 0);
+	$articles = array_slice($found['articles'] ?? [], 0, 4);
+	$say = '';
+	$why = '';
+	$aiUsed = false;
+	$best = $articles[0] ?? null;
+	if (is_array($best)) {
+		$say = trim((string)($best['excerpt'] ?? ''));
+		$why = 'Matched knowledge: ' . trim((string)($best['title'] ?? 'article'));
+	}
+	if ($q !== '' && is_array($best) && function_exists('skykin_ai_ready') && skykin_ai_ready() && function_exists('skykin_ai_http')) {
+		$pack = [];
+		foreach ($articles as $a) {
+			$pack[] = [
+				'title' => (string)($a['title'] ?? ''),
+				'tag' => (string)($a['tag'] ?? ''),
+				'excerpt' => (string)($a['excerpt'] ?? ''),
+			];
+		}
+		$system = 'You are a live call-center coach for SkyKin. Use ONLY the knowledge articles given. Return JSON with keys say_next (one or two short sentences the agent can say now) and why (article title). If nothing applies, say_next empty. Never invent policy.';
+		$user = "Transcript:\n{$q}\n\nArticles:\n" . json_encode($pack, JSON_UNESCAPED_UNICODE);
+		try {
+			$c = skykin_ai_config();
+			$payload = json_encode([
+				'model' => $c['chat_model'],
+				'temperature' => 0.2,
+				'response_format' => ['type' => 'json_object'],
+				'messages' => [
+					['role' => 'system', 'content' => $system],
+					['role' => 'user', 'content' => $user],
+				],
+			], JSON_UNESCAPED_UNICODE);
+			$headers = array_merge(skykin_ai_auth_headers(), ['Content-Type' => 'application/json']);
+			$url = rtrim((string)$c['base_url'], '/') . (string)$c['chat_path'];
+			$res = skykin_ai_http('POST', $url, $headers, $payload, 12);
+			if (!empty($res['ok'])) {
+				$j = json_decode((string)($res['body'] ?? ''), true);
+				$content = (string)($j['choices'][0]['message']['content'] ?? $j['content'] ?? '');
+				$d = json_decode($content, true);
+				if (is_array($d)) {
+					$next = trim((string)($d['say_next'] ?? ''));
+					if ($next !== '') {
+						$say = $next;
+						$aiUsed = true;
+					}
+					if (trim((string)($d['why'] ?? '')) !== '') {
+						$why = trim((string)$d['why']);
+					}
+				}
+			}
+		} catch (Throwable $e) {
+			// keep keyword match
+		}
+	}
+	return [
+		'ok' => true,
+		'articles' => $articles,
+		'say_next' => $say,
+		'why' => $why,
+		'ai' => $aiUsed,
+	];
+}
+
+/** Cases / tickets — call reason + status from wrap-up. */
+function skykin_crm_ensure_cases(PDO $db): void {
+	$isSqlite = ($db->getAttribute(PDO::ATTR_DRIVER_NAME) === 'sqlite');
+	if ($isSqlite) {
+		$db->exec("CREATE TABLE IF NOT EXISTS skykin_cases (
+			case_id INTEGER PRIMARY KEY AUTOINCREMENT,
+			customer_name TEXT,
+			customer_phone TEXT,
+			order_id TEXT,
+			issue_type TEXT,
+			description TEXT,
+			delivery_date TEXT,
+			department TEXT,
+			agent_id TEXT,
+			priority TEXT DEFAULT 'Medium',
+			status TEXT DEFAULT 'Open',
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		)");
+	} else {
+		$db->exec("CREATE TABLE IF NOT EXISTS skykin_cases (
+			case_id SERIAL PRIMARY KEY,
+			customer_name VARCHAR(150),
+			customer_phone VARCHAR(50),
+			order_id VARCHAR(50),
+			issue_type VARCHAR(200),
+			description TEXT,
+			delivery_date DATE,
+			department VARCHAR(50),
+			agent_id VARCHAR(50),
+			priority VARCHAR(20) DEFAULT 'Medium',
+			status VARCHAR(40) DEFAULT 'Open',
+			created_at TIMESTAMP DEFAULT NOW()
+		)");
+		try {
+			$db->exec("ALTER TABLE skykin_cases ADD COLUMN IF NOT EXISTS priority VARCHAR(20) DEFAULT 'Medium'");
+			$db->exec("ALTER TABLE skykin_cases ADD COLUMN IF NOT EXISTS status VARCHAR(40) DEFAULT 'Open'");
+			$db->exec("ALTER TABLE skykin_cases ADD COLUMN IF NOT EXISTS department VARCHAR(50)");
+			$db->exec("ALTER TABLE skykin_cases ADD COLUMN IF NOT EXISTS agent_id VARCHAR(50)");
+			$db->exec("ALTER TABLE skykin_cases ADD COLUMN IF NOT EXISTS issue_type VARCHAR(200)");
+			$db->exec("ALTER TABLE skykin_cases ADD COLUMN IF NOT EXISTS description TEXT");
+			$db->exec("ALTER TABLE skykin_cases ADD COLUMN IF NOT EXISTS customer_name VARCHAR(150)");
+			$db->exec("ALTER TABLE skykin_cases ADD COLUMN IF NOT EXISTS customer_phone VARCHAR(50)");
+		} catch (Throwable $e) {
+			/* ignore */
+		}
+	}
+}
+
+/**
+ * Map wrap-up outcome → case status.
+ */
+function skykin_crm_outcome_to_case_status(string $outcome): string {
+	$o = strtolower(trim($outcome));
+	if ($o === 'resolved') {
+		return 'Resolved';
+	}
+	if ($o === 'escalated') {
+		return 'Escalated';
+	}
+	if ($o === 'follow-up' || $o === 'follow_up' || $o === 'followup') {
+		return 'Follow-up';
+	}
+	return $outcome !== '' ? $outcome : 'Open';
+}
+
+/**
+ * Parse wrap-up journey summary into reason + status.
+ * Formats: "Path · Outcome — notes" | "Path · Outcome" | "Leaf (Outcome)" | plain text
+ * @return array{0:string,1:string,2:string} reason, status, notes
+ */
+function skykin_crm_parse_journey_reason(string $summary): array {
+	$summary = trim($summary);
+	$notes = '';
+	$status = 'Open';
+	$reason = $summary;
+	if (preg_match('/^(.+?)\s*[·•]\s*(Resolved|Follow-up|Follow up|Escalated)\s*(?:—|-)\s*(.*)$/iu', $summary, $m)) {
+		$reason = trim($m[1]);
+		$status = skykin_crm_outcome_to_case_status($m[2]);
+		$notes = trim($m[3]);
+	} elseif (preg_match('/^(.+?)\s*[·•]\s*(Resolved|Follow-up|Follow up|Escalated)\s*$/iu', $summary, $m)) {
+		$reason = trim($m[1]);
+		$status = skykin_crm_outcome_to_case_status($m[2]);
+	} elseif (preg_match('/^(.+?)\s*\((Resolved|Follow-up|Follow up|Escalated)\)\s*$/iu', $summary, $m)) {
+		$reason = trim($m[1]);
+		$status = skykin_crm_outcome_to_case_status($m[2]);
+	} elseif (preg_match('/^(.+?)\s*(?:—|-)\s*(.+)$/u', $summary, $m)) {
+		$reason = trim($m[1]);
+		$notes = trim($m[2]);
+	}
+	if ($reason === '') {
+		$reason = $summary !== '' ? $summary : 'Voice call';
+	}
+	return [$reason, $status, $notes];
+}
+
+/**
+ * Import saved Voice journey call-reasons into skykin_cases (older wrap-ups
+ * wrote journey only). Skips rows that already match phone+reason+day.
+ */
+function skykin_crm_sync_cases_from_journey(PDO $db): int {
+	skykin_crm_ensure_journey($db);
+	skykin_crm_ensure_cases($db);
+	$added = 0;
+	try {
+		$rows = $db->query(
+			"SELECT phone, event_at, summary FROM skykin_journey_events
+			 WHERE channel = 'Voice' AND summary IS NOT NULL AND TRIM(summary) <> ''
+			 ORDER BY event_at DESC LIMIT 150"
+		)->fetchAll(PDO::FETCH_ASSOC);
+	} catch (Throwable $e) {
+		return 0;
+	}
+	$isSqlite = ($db->getAttribute(PDO::ATTR_DRIVER_NAME) === 'sqlite');
+	foreach ($rows as $ev) {
+		$ph = trim((string)($ev['phone'] ?? ''));
+		$summary = trim((string)($ev['summary'] ?? ''));
+		$at = trim((string)($ev['event_at'] ?? ''));
+		if ($ph === '' || $summary === '') {
+			continue;
+		}
+		// Skip raw CDR placeholders
+		if (preg_match('/awaiting call reason|normal clearing|media timeout|agent connected/i', $summary)) {
+			continue;
+		}
+		[$reason, $status, $notes] = skykin_crm_parse_journey_reason($summary);
+		$day = $at !== '' ? substr($at, 0, 10) : date('Y-m-d');
+		try {
+			if ($isSqlite) {
+				$chk = $db->prepare(
+					"SELECT case_id FROM skykin_cases
+					 WHERE customer_phone = :p AND issue_type = :r
+					   AND date(created_at) = date(:d) LIMIT 1"
+				);
+				$chk->execute([':p' => $ph, ':r' => $reason, ':d' => $day]);
+			} else {
+				$chk = $db->prepare(
+					"SELECT case_id FROM skykin_cases
+					 WHERE customer_phone = :p AND issue_type = :r
+					   AND created_at::date = :d::date LIMIT 1"
+				);
+				$chk->execute([':p' => $ph, ':r' => $reason, ':d' => $day]);
+			}
+			if ($chk->fetchColumn()) {
+				continue;
+			}
+		} catch (Throwable $e) {
+			continue;
+		}
+		$name = $ph;
+		try {
+			$c = skykin_crm_find_contact($db, $ph);
+			if (!empty($c['full_name'])) {
+				$name = (string)$c['full_name'];
+			}
+		} catch (Throwable $e) {
+			/* ignore */
+		}
+		$desc = $notes !== '' ? $notes : ('Outcome: ' . $status);
+		try {
+			if ($isSqlite) {
+				$db->prepare(
+					"INSERT INTO skykin_cases
+					 (customer_name, customer_phone, issue_type, description, status, priority, agent_id, department, created_at)
+					 VALUES (:n,:p,:r,:d,:st,'Medium','','Voice', COALESCE(:at, CURRENT_TIMESTAMP))"
+				)->execute([
+					':n' => $name,
+					':p' => $ph,
+					':r' => $reason,
+					':d' => $desc,
+					':st' => $status,
+					':at' => $at !== '' ? $at : null,
+				]);
+			} else {
+				$db->prepare(
+					"INSERT INTO skykin_cases
+					 (customer_name, customer_phone, issue_type, description, status, priority, agent_id, department, created_at)
+					 VALUES (:n,:p,:r,:d,:st,'Medium','','Voice', COALESCE(:at::timestamp, NOW()))"
+				)->execute([
+					':n' => $name,
+					':p' => $ph,
+					':r' => $reason,
+					':d' => $desc,
+					':st' => $status,
+					':at' => $at !== '' ? $at : null,
+				]);
+			}
+			$added++;
+		} catch (Throwable $e) {
+			/* ignore bad row */
+		}
+	}
+	return $added;
+}
+
+/**
+ * Build Customer 360 payload: journey (multi-channel), cases, products, Fayda, CSAT, AI text.
+ * @return array<string,mixed>
+ */
+function skykin_crm_build_360(PDO $db, string $phone, ?array $contact = null): array {
+	skykin_crm_ensure_contacts($db);
+	skykin_crm_ensure_cases($db);
+	skykin_crm_ensure_journey($db);
+	if ($contact === null) {
+		$contact = skykin_crm_find_contact($db, $phone) ?: [];
+	}
+	$isSqlite = ($db->getAttribute(PDO::ATTR_DRIVER_NAME) === 'sqlite');
+	$digits = preg_replace('/\D+/', '', $phone);
+	$clean = preg_replace('/^(\+251|00251|0)/', '', $phone);
+	$tail = function_exists('skykin_phone_tail') ? skykin_phone_tail($phone) : substr($digits, -9);
+	$isExt = (bool)preg_match('/^\d{2,6}$/', $digits);
+
+	// Voice CDR → journey (exact match for short extensions like 101 — avoid LIKE %101%)
+	$journey = [];
+	try {
+		$timeExpr = $isSqlite
+			? "datetime(start_epoch, 'unixepoch', 'localtime')"
+			: skykin_cdr_time_sql('YYYY-MM-DD HH24:MI:SS');
+		if ($isExt) {
+			$s2 = $db->prepare("SELECT {$timeExpr} as call_time, start_epoch, direction, billsec, destination_number, hangup_cause
+				FROM v_xml_cdr
+				WHERE caller_id_number = :e OR destination_number = :e
+				   OR caller_id_number LIKE :e || '@%'
+				   OR destination_number LIKE :e || '@%'
+				   OR last_arg LIKE '%user/' || :e || '@%'
+				ORDER BY start_epoch DESC LIMIT 30");
+			$s2->execute([':e' => $digits]);
+		} else {
+			$s2 = $db->prepare("SELECT {$timeExpr} as call_time, start_epoch, direction, billsec, destination_number, hangup_cause
+				FROM v_xml_cdr
+				WHERE (caller_id_number LIKE :q OR destination_number LIKE :q
+					OR caller_id_number LIKE :c OR destination_number LIKE :c)
+				ORDER BY start_epoch DESC LIMIT 30");
+			$s2->execute([':q' => '%' . $phone . '%', ':c' => '%' . $clean . '%']);
+		}
+		$cdr = $s2->fetchAll(PDO::FETCH_ASSOC);
+		$contact['call_history'] = $cdr;
+		foreach ($cdr as $h) {
+			$dir = strtolower((string)($h['direction'] ?? 'call'));
+			$bill = (int)($h['billsec'] ?? 0);
+			$epoch = (int)($h['start_epoch'] ?? 0);
+			// Do not put hangup cause on the track — call reason comes from wrap-up.
+			if ($dir === 'inbound' && $bill > 0) {
+				$text = 'Inbound call — awaiting call reason';
+			} elseif ($dir === 'outbound' && $bill > 0) {
+				$text = 'Outbound call — awaiting call reason';
+			} elseif ($dir === 'inbound') {
+				$text = 'Missed / short inbound — awaiting call reason';
+			} else {
+				$text = ucfirst($dir ?: 'Call') . ' — awaiting call reason';
+			}
+			$journey[] = [
+				'event_at' => (string)($h['call_time'] ?? ''),
+				'epoch' => $epoch,
+				'channel' => 'Voice',
+				'summary' => $text,
+				'source' => 'cdr',
+			];
+		}
+	} catch (Throwable $e) {
+		$contact['call_history'] = [];
+	}
+
+	// Softphone ESL day dump — today's agent↔agent / WebRTC legs often only here
+	// (v_xml_cdr may still show older 101 rows while live peers are contact tokens).
+	try {
+		if (!$isSqlite) {
+			$tz = function_exists('skykin_sql_tz') ? skykin_sql_tz() : 'Africa/Addis_Ababa';
+			if ($isExt) {
+				$se = $db->prepare(
+					"SELECT to_char(timezone(:tz, COALESCE(started_at, ended_at)), 'YYYY-MM-DD HH24:MI:SS') as call_time,
+					        EXTRACT(EPOCH FROM COALESCE(started_at, ended_at))::bigint as start_epoch,
+					        direction, caller, callee, billsec, hangup_cause, extension
+					 FROM skyconnect_calls
+					 WHERE extension = :e OR caller = :e OR callee = :e
+					    OR caller LIKE :e || '@%' OR callee LIKE :e || '@%'
+					 ORDER BY started_at DESC NULLS LAST LIMIT 40"
+				);
+				$se->execute([':tz' => $tz, ':e' => $digits]);
+			} else {
+				$se = $db->prepare(
+					"SELECT to_char(timezone(:tz, COALESCE(started_at, ended_at)), 'YYYY-MM-DD HH24:MI:SS') as call_time,
+					        EXTRACT(EPOCH FROM COALESCE(started_at, ended_at))::bigint as start_epoch,
+					        direction, caller, callee, billsec, hangup_cause, extension
+					 FROM skyconnect_calls
+					 WHERE caller LIKE :q OR callee LIKE :q OR caller LIKE :c OR callee LIKE :c
+					 ORDER BY started_at DESC NULLS LAST LIMIT 40"
+				);
+				$se->execute([
+					':tz' => $tz,
+					':q' => '%' . $phone . '%',
+					':c' => '%' . $clean . '%',
+				]);
+			}
+			$seenEpoch = [];
+			foreach ($journey as $existing) {
+				$ee = (int)($existing['epoch'] ?? 0);
+				if ($ee > 0) {
+					$seenEpoch[$ee] = true;
+				}
+			}
+			$eslHist = [];
+			foreach ($se->fetchAll(PDO::FETCH_ASSOC) as $h) {
+				$epoch = (int)($h['start_epoch'] ?? 0);
+				$dup = false;
+				if ($epoch > 0) {
+					foreach ($seenEpoch as $ee => $_) {
+						if (abs($ee - $epoch) <= 5) {
+							$dup = true;
+							break;
+						}
+					}
+				}
+				if ($dup) {
+					continue;
+				}
+				if ($epoch > 0) {
+					$seenEpoch[$epoch] = true;
+				}
+				$dir = strtolower((string)($h['direction'] ?? 'call'));
+				$bill = (int)($h['billsec'] ?? 0);
+				$cause = (string)($h['hangup_cause'] ?? '');
+				if ($dir === 'inbound' && $bill > 0) {
+					$text = 'Inbound call — awaiting call reason';
+				} elseif ($dir === 'outbound' && $bill > 0) {
+					$text = 'Outbound call — awaiting call reason';
+				} else {
+					$text = ucfirst($dir ?: 'Call') . ' — awaiting call reason';
+				}
+				$row = [
+					'call_time' => (string)($h['call_time'] ?? ''),
+					'start_epoch' => $epoch,
+					'direction' => $dir,
+					'billsec' => $bill,
+					'destination_number' => (string)($h['callee'] ?? ''),
+					'hangup_cause' => $cause,
+				];
+				$eslHist[] = $row;
+				$journey[] = [
+					'event_at' => (string)($h['call_time'] ?? ''),
+					'epoch' => $epoch,
+					'channel' => 'Voice',
+					'summary' => $text,
+					'source' => 'esl',
+				];
+			}
+			if ($eslHist) {
+				$contact['call_history'] = array_values(array_merge($eslHist, $contact['call_history'] ?? []));
+			}
+		}
+	} catch (Throwable $e) {
+		/* skyconnect_calls may be empty on some hosts */
+	}
+
+	// Stored multi-channel / wrap-up journey events (call reason lives here)
+	try {
+		if ($isExt) {
+			$sj = $db->prepare("SELECT event_at, channel, summary FROM skykin_journey_events
+				WHERE phone = :e OR phone LIKE :e || '@%'
+				ORDER BY event_at DESC LIMIT 40");
+			$sj->execute([':e' => $digits]);
+		} else {
+			$sj = $db->prepare("SELECT event_at, channel, summary FROM skykin_journey_events
+				WHERE phone = :p OR phone = :n OR phone LIKE :c OR phone LIKE :t
+				ORDER BY event_at DESC LIMIT 40");
+			$norm = function_exists('skykin_normalize_phone_storage')
+				? skykin_normalize_phone_storage($phone) : $phone;
+			$sj->execute([
+				':p' => $phone,
+				':n' => $norm,
+				':c' => '%' . $clean . '%',
+				':t' => '%' . $tail . '%',
+			]);
+		}
+		foreach ($sj->fetchAll(PDO::FETCH_ASSOC) as $ev) {
+			$at = (string)($ev['event_at'] ?? '');
+			$epoch = strtotime($at) ?: 0;
+			$journey[] = [
+				'event_at' => $at,
+				'epoch' => $epoch,
+				'channel' => (string)($ev['channel'] ?? 'CRM'),
+				'summary' => (string)($ev['summary'] ?? ''),
+				'source' => 'journey',
+			];
+		}
+	} catch (Throwable $e) {
+		/* ignore */
+	}
+
+	// Open / recent cases
+	$cases = [];
+	try {
+		if ($isExt) {
+			$sc = $db->prepare("SELECT case_id, customer_name, customer_phone, issue_type, description, status, priority, created_at
+				FROM skykin_cases
+				WHERE customer_phone = :e OR customer_phone LIKE :e || '@%'
+				ORDER BY created_at DESC LIMIT 20");
+			$sc->execute([':e' => $digits]);
+		} else {
+			$sc = $db->prepare("SELECT case_id, customer_name, customer_phone, issue_type, description, status, priority, created_at
+				FROM skykin_cases
+				WHERE customer_phone LIKE :q OR customer_phone LIKE :c OR customer_phone LIKE :t
+				ORDER BY created_at DESC LIMIT 20");
+			$sc->execute([
+				':q' => '%' . $phone . '%',
+				':c' => '%' . $clean . '%',
+				':t' => '%' . $tail . '%',
+			]);
+		}
+		$cases = $sc->fetchAll(PDO::FETCH_ASSOC);
+		foreach ($cases as $cs) {
+			$st = (string)($cs['status'] ?? '');
+			$issue = trim((string)($cs['issue_type'] ?? '') . ' — ' . (string)($cs['description'] ?? ''));
+			$at = (string)($cs['created_at'] ?? '');
+			$journey[] = [
+				'event_at' => $at,
+				'epoch' => strtotime($at) ?: 0,
+				'channel' => 'Case',
+				'summary' => trim($issue, ' —') !== '' ? trim($issue, ' —') : ('Case #' . ($cs['case_id'] ?? '')),
+				'source' => 'case',
+				'status' => $st,
+			];
+		}
+	} catch (Throwable $e) {
+		$cases = [];
+	}
+
+	// SMS logs if present
+	try {
+		$ss = $db->prepare("SELECT created_at, message FROM skykin_sms_logs
+			WHERE phone LIKE :q OR phone LIKE :c LIMIT 10");
+		$ss->execute([':q' => '%' . $phone . '%', ':c' => '%' . $clean . '%']);
+		foreach ($ss->fetchAll(PDO::FETCH_ASSOC) as $sms) {
+			$at = (string)($sms['created_at'] ?? '');
+			$journey[] = [
+				'event_at' => $at,
+				'epoch' => strtotime($at) ?: 0,
+				'channel' => 'SMS',
+				'summary' => mb_substr((string)($sms['message'] ?? 'SMS'), 0, 120),
+				'source' => 'sms',
+			];
+		}
+	} catch (Throwable $e) {
+		/* table may not exist */
+	}
+
+	// Drop raw CDR/ESL voice status rows next to a wrap-up call reason (same ~5 min)
+	$wrapEpochs = [];
+	foreach ($journey as $j) {
+		if (($j['source'] ?? '') === 'journey' && strcasecmp((string)($j['channel'] ?? ''), 'Voice') === 0) {
+			$wrapEpochs[] = (int)($j['epoch'] ?? 0);
+		}
+	}
+	if ($wrapEpochs) {
+		$journey = array_values(array_filter($journey, static function ($j) use ($wrapEpochs) {
+			$src = (string)($j['source'] ?? '');
+			if ($src !== 'cdr' && $src !== 'esl') {
+				return true;
+			}
+			$e = (int)($j['epoch'] ?? 0);
+			foreach ($wrapEpochs as $we) {
+				if ($we > 0 && abs($e - $we) <= 300) {
+					return false;
+				}
+			}
+			return true;
+		}));
+	}
+
+	// Newest first (by epoch, then prefer wrap-up over raw CDR)
+	usort($journey, static function ($a, $b) {
+		$ea = (int)($a['epoch'] ?? 0);
+		$eb = (int)($b['epoch'] ?? 0);
+		if ($ea !== $eb) {
+			return $eb <=> $ea;
+		}
+		$pa = (($a['source'] ?? '') === 'journey') ? 1 : 0;
+		$pb = (($b['source'] ?? '') === 'journey') ? 1 : 0;
+		return $pb <=> $pa;
+	});
+
+	$fayda = !empty($contact['fayda_verified'])
+		|| (bool)preg_match('/fayda|verified/i', (string)($contact['notes'] ?? ''))
+		|| (bool)preg_match('/fayda/i', (string)($contact['account_type'] ?? ''));
+	$csat = $contact['csat'] ?? null;
+	if ($csat === null || $csat === '') {
+		$csat = null;
+	} else {
+		$csat = (float)$csat;
+	}
+	$sentiment = trim((string)($contact['sentiment'] ?? ''));
+	if ($sentiment === '') {
+		$sentiment = 'Neutral';
+	}
+	$products = trim((string)($contact['products'] ?? ''));
+	if ($products === '') {
+		$products = trim((string)($contact['company'] ?? ''));
+		if ($products === '') {
+			$products = 'Prepaid plan | telebirr wallet';
+		}
+	}
+
+	$openCases = array_values(array_filter($cases, static function ($c) {
+		$st = strtolower((string)($c['status'] ?? ''));
+		return !in_array($st, ['closed', 'resolved', 'done', 'cancelled'], true);
+	}));
+
+	// Contacts this week from journey timestamps
+	$week = 0;
+	$weekAgo = time() - 7 * 86400;
+	foreach ($journey as $j) {
+		$t = strtotime((string)($j['event_at'] ?? ''));
+		if ($t && $t >= $weekAgo) {
+			$week++;
+		}
+	}
+
+	$aiSummary = '';
+	$nextAction = '';
+	$name = (string)($contact['full_name'] ?? 'Customer');
+	$topics = [];
+	foreach (array_slice($journey, 0, 8) as $j) {
+		$topics[] = (string)($j['summary'] ?? '');
+	}
+	$topicBlob = strtolower(implode(' ', $topics) . ' ' . (string)($contact['notes'] ?? ''));
+	if (preg_match('/sim|telebirr|fayda|package|bill/i', $topicBlob)) {
+		$aiSummary = sprintf(
+			'%d contact%s this week about SIM and telebirr.%s',
+			max(1, $week),
+			$week === 1 ? '' : 's',
+			$fayda ? ' Identity verified with Fayda.' : ''
+		);
+		$nextAction = 'Offer SIM replacement and restore telebirr';
+	} else {
+		$aiSummary = sprintf(
+			'%s — %d recent interaction%s across channels.%s',
+			$name,
+			count($journey),
+			count($journey) === 1 ? '' : 's',
+			$fayda ? ' Fayda verified.' : ''
+		);
+		$nextAction = count($openCases)
+			? ('Continue open case: ' . ($openCases[0]['issue_type'] ?? 'support'))
+			: 'Confirm the issue and open a case if unresolved';
+	}
+	if (!empty($contact['notes']) && strlen(trim((string)$contact['notes'])) > 15) {
+		$aiSummary = trim((string)$contact['notes']);
+	}
+
+	return array_merge($contact ?: [
+		'phone' => $phone,
+		'full_name' => $name !== 'Customer' ? $name : 'Unknown caller',
+	], [
+		'phone' => $contact['phone'] ?? $phone,
+		'fayda_verified' => $fayda ? 1 : 0,
+		'csat' => $csat,
+		'sentiment' => $sentiment,
+		'products' => $products,
+		'contacts_this_week' => $week,
+		'journey' => array_slice($journey, 0, 30),
+		'cases' => $cases,
+		'open_cases' => $openCases,
+		'open_case_count' => count($openCases),
+		'ai_summary' => $aiSummary,
+		'next_best_action' => $nextAction,
+	]);
 }
 
 function skykin_crm_find_contact(PDO $db, string $phone): ?array {
@@ -1129,7 +2331,8 @@ function skykin_cdr_hourly_heatmap(array $rows): array {
 
 /** Format mm:ss from seconds. */
 function skykin_cdr_fmt_dur(int $sec): string {
-	if ($sec < 0) {
+	// Guard bad ESL/epoch math (e.g. 29863567:45 on history)
+	if ($sec < 0 || $sec > 86400) {
 		$sec = 0;
 	}
 	return floor($sec / 60) . ':' . str_pad((string)($sec % 60), 2, '0', STR_PAD_LEFT);
@@ -1391,6 +2594,77 @@ function skykin_pdo_fusionpbx(): PDO {
 		);
 	}
 }
+
+function skykin_app_role_from_groups(?PDO $db = null, ?string $user_uuid = null, $session_groups = null): array {
+	$names = [];
+	$add = static function ($raw) use (&$names) {
+		$n = strtolower(trim(is_array($raw) ? (string)($raw['group_name'] ?? $raw['name'] ?? '') : (string)$raw));
+		if ($n !== '' && !in_array($n, $names, true)) {
+			$names[] = $n;
+		}
+	};
+	if (is_array($session_groups)) {
+		foreach ($session_groups as $g) {
+			$add($g);
+		}
+	}
+	if ($user_uuid && $db) {
+		try {
+			$s = $db->prepare(
+				"SELECT g.group_name
+				 FROM v_user_groups ug
+				 JOIN v_groups g ON g.group_uuid = ug.group_uuid
+				 WHERE ug.user_uuid = :u"
+			);
+			$s->execute([':u' => $user_uuid]);
+			foreach ($s->fetchAll(PDO::FETCH_ASSOC) as $row) {
+				$add($row['group_name'] ?? '');
+			}
+		} catch (Throwable $e) {
+			/* keep session names */
+		}
+	}
+	$role = 'agent';
+	$is_superadmin = false;
+	$is_admin = false;
+	$is_supervisor = false;
+	foreach ($names as $n) {
+		if ($n === 'superadmin' || str_contains($n, 'superadmin')) {
+			$is_superadmin = true;
+			$is_admin = true;
+			$is_supervisor = true;
+			$role = 'superadmin';
+			break;
+		}
+	}
+	if ($role !== 'superadmin') {
+		foreach ($names as $n) {
+			if ($n === 'admin' || $n === 'domain admin') {
+				$is_admin = true;
+				$is_supervisor = true;
+				$role = 'admin';
+				break;
+			}
+		}
+	}
+	if ($role === 'agent') {
+		foreach ($names as $n) {
+			if ($n === 'supervisor' || str_contains($n, 'supervisor')) {
+				$is_supervisor = true;
+				$role = 'supervisor';
+				break;
+			}
+		}
+	}
+	return [
+		'role' => $role,
+		'groups' => $names,
+		'is_superadmin' => $is_superadmin,
+		'is_admin' => $is_admin,
+		'is_supervisor' => $is_supervisor,
+	];
+}
+
 
 /**
  * Event Socket settings.

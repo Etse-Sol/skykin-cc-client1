@@ -169,7 +169,22 @@ if (isset($_GET['api'])) {
                 ':sp'=>(int)($body['score_procedure']??0),':sc'=>(int)($body['score_closing']??0),
                 ':ts'=>$total,':ms'=>$max,':gr'=>$grade,':nt'=>$body['notes']??'',
             ]);
-            echo json_encode(['ok'=>true,'grade'=>$grade,'total'=>$total,'max'=>$max,'pct'=>$pct]);
+            $learn = [];
+            if (function_exists('skykin_learn_recommend_from_eval')) {
+                try {
+                    $learn = skykin_learn_recommend_from_eval($db, $dom, (string)($body['agent_ext'] ?? ''), (string)($body['agent_name'] ?? ''), [
+                        'greeting' => (int)($body['score_greeting'] ?? 0),
+                        'knowledge' => (int)($body['score_knowledge'] ?? 0),
+                        'resolution' => (int)($body['score_resolution'] ?? 0),
+                        'tone' => (int)($body['score_tone'] ?? 0),
+                        'procedure' => (int)($body['score_procedure'] ?? 0),
+                        'closing' => (int)($body['score_closing'] ?? 0),
+                    ]);
+                } catch (Throwable $e) {
+                    $learn = [];
+                }
+            }
+            echo json_encode(['ok'=>true,'grade'=>$grade,'total'=>$total,'max'=>$max,'pct'=>$pct,'learning'=>$learn]);
             exit;
         }
 

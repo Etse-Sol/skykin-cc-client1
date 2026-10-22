@@ -138,6 +138,20 @@ function skykin_ai_config(): array {
     return $cfg;
 }
 
+/** Base URLs to try (web container localhost is not the host Whisper). */
+function skykin_ai_candidate_bases(): array {
+    $c = skykin_ai_config();
+    $primary = rtrim((string)$c['base_url'], '/');
+    $out = [$primary];
+    if (preg_match('#https?://(127\.0\.0\.1|localhost)(:\d+)?#', $primary, $m)) {
+        $port = $m[2] ?? ':8100';
+        foreach (['172.18.0.1', '172.17.0.1'] as $gw) {
+            $out[] = 'http://' . $gw . $port;
+        }
+    }
+    return array_values(array_unique($out));
+}
+
 function skykin_ai_ready(): bool {
     $c = skykin_ai_config();
     if (empty($c['enabled']) || empty($c['base_url'])) {
@@ -273,7 +287,7 @@ function skykin_ai_eval_skykin(string $absolutePath, array $meta = []): array {
  * Transcribe via OpenAI-compatible endpoint on internal (or cloud) base URL.
  * @return array{ok:bool,text?:string,error?:string}
  */
-function skykin_ai_transcribe(string $absolutePath): array {
+function skykin_ai_transcribe(string $absolutePath, ?string $language = null, ?int $timeout = null): array {
     if (!skykin_ai_ready()) {
         return ['ok' => false, 'error' => 'AI not configured (set SKYKIN_AI_BASE_URL in /etc/skykin/ai.env)'];
     }
@@ -288,22 +302,72 @@ function skykin_ai_transcribe(string $absolutePath): array {
         return ['ok' => false, 'error' => 'Recording too large for transcription'];
     }
     $c = skykin_ai_config();
-    $url = rtrim($c['base_url'], '/') . $c['transcribe_path'];
-    $post = [
-        'file' => skykin_ai_curl_file($absolutePath),
-        'model' => $c['whisper_model'],
-        'response_format' => 'json',
-    ];
-    $res = skykin_ai_http('POST', $url, skykin_ai_auth_headers(), $post, (int)$c['timeout']);
-    if (empty($res['ok'])) {
-        return ['ok' => false, 'error' => $res['error'] ?? 'transcribe failed'];
+    $wait = $timeout !== null ? max(8, $timeout) : (int)$c['timeout'];
+    $lang = strtolower(trim((string)$language));
+    $lang2 = '';
+    if ($lang !== '' && preg_match('/^[a-z]{2}(?:-[a-z]{2})?$/i', $lang)) {
+        $lang2 = substr($lang, 0, 2);
     }
-    $j = json_decode((string)$res['body'], true);
-    $text = trim((string)($j['text'] ?? $j['transcript'] ?? ''));
-    if ($text === '') {
-        return ['ok' => false, 'error' => 'Empty transcript'];
+    $last = 'transcribe failed';
+    foreach (skykin_ai_candidate_bases() as $base) {
+        $root = rtrim($base, '/');
+        $asrQs = '/asr?task=transcribe&output=json&encode=true';
+        if ($lang2 !== '') {
+            $asrQs .= '&language=' . rawurlencode($lang2);
+        }
+        $tries = [
+            [
+                $root . $asrQs,
+                static function () use ($absolutePath): array {
+                    return ['audio_file' => skykin_ai_curl_file($absolutePath)];
+                },
+            ],
+            [
+                $root . '/asr',
+                static function () use ($absolutePath, $lang2): array {
+                    $p = ['audio_file' => skykin_ai_curl_file($absolutePath)];
+                    if ($lang2 !== '') {
+                        $p['language'] = $lang2;
+                    }
+                    return $p;
+                },
+            ],
+            [
+                $root . $c['transcribe_path'],
+                static function () use ($absolutePath, $c, $lang2): array {
+                    $p = [
+                        'file' => skykin_ai_curl_file($absolutePath),
+                        'model' => $c['whisper_model'],
+                        'response_format' => 'json',
+                    ];
+                    if ($lang2 !== '') {
+                        $p['language'] = $lang2;
+                    }
+                    return $p;
+                },
+            ],
+        ];
+        foreach ($tries as [$url, $makePost]) {
+            $res = skykin_ai_http('POST', $url, skykin_ai_auth_headers(), $makePost(), $wait);
+            if (empty($res['ok'])) {
+                $last = (string)($res['error'] ?? 'transcribe failed');
+                continue;
+            }
+            $raw = trim((string)($res['body'] ?? ''));
+            $j = json_decode($raw, true);
+            $text = '';
+            if (is_array($j)) {
+                $text = trim((string)($j['text'] ?? $j['transcript'] ?? $j['transcription'] ?? ''));
+            } elseif ($raw !== '' && $raw[0] !== '{') {
+                $text = $raw;
+            }
+            if ($text !== '') {
+                return ['ok' => true, 'text' => $text];
+            }
+            $last = 'Empty transcript';
+        }
     }
-    return ['ok' => true, 'text' => $text];
+    return ['ok' => false, 'error' => $last];
 }
 
 /**

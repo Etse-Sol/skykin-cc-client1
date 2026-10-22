@@ -52,18 +52,73 @@ try {
             updated_at    TIMESTAMP DEFAULT NOW()
         )");
     }
+    skykin_crm_ensure_contacts($db);
+    skykin_crm_ensure_journey($db);
+    skykin_crm_ensure_cases($db);
+    skykin_crm_ensure_knowledge($db);
+    try {
+        skykin_crm_seed_knowledge($db);
+    } catch (Throwable $eKb) { /* ignore */ }
     // Sample contacts if empty
     $cnt = $db->query("SELECT COUNT(*) FROM skykin_contacts")->fetchColumn();
     if ($cnt == 0) {
-        $db->exec("INSERT INTO skykin_contacts (phone,full_name,email,company,language,account_type,notes) VALUES
-            ('+251911000001','Abebe Girma','abebe@example.com','TechCo','Amharic','VIP','Prefers callbacks in the morning'),
-            ('+251922000002','Sara Mohammed','sara@example.com','BizGroup','English','Customer','Call history: 5 support tickets'),
-            ('+251933000003','Dawit Bekele','dawit@example.com','RetailPlus','Oromo','Customer',''),
-            ('0911000001','Abebe Girma','abebe@example.com','TechCo','Amharic','VIP',''),
-            ('0922000002','Sara Mohammed','','BizGroup','English','Customer',''),
-            ('0933000003','Dawit Bekele','','RetailPlus','Oromo','Customer','')
+        $db->exec("INSERT INTO skykin_contacts (phone,full_name,email,company,language,account_type,notes,fayda_verified,csat,sentiment,products) VALUES
+            ('+251911000001','Abebe Girma','abebe@example.com','TechCo','Amharic','VIP','Prefers callbacks in the morning',0,4.0,'Neutral','Prepaid plan | telebirr wallet'),
+            ('+251922000002','Sara Mohammed','sara@example.com','BizGroup','English','Customer','Call history: 5 support tickets',0,4.5,'Positive','Postpaid | telebirr'),
+            ('+251933000003','Dawit Bekele','dawit@example.com','RetailPlus','Oromo','Customer','',0,NULL,'Neutral','Prepaid plan'),
+            ('+251911234567','Selam T.','selam@example.com','Ethio Telecom','Amharic','Gold','Three contacts this week about SIM and telebirr. Identity verified with Fayda.',1,5.0,'Neutral','Prepaid plan | telebirr wallet')
         ");
     }
+    // Ensure Selam demo contact + multi-channel journey (mockup Customer 360)
+    try {
+        $selamPhone = '+251911234567';
+        $haveSelam = $db->prepare("SELECT contact_id FROM skykin_contacts WHERE phone = :p OR phone LIKE :t LIMIT 1");
+        $haveSelam->execute([':p' => $selamPhone, ':t' => '%911234567%']);
+        if (!$haveSelam->fetch()) {
+            try {
+                $db->prepare("INSERT INTO skykin_contacts
+                    (phone,full_name,email,company,language,account_type,notes,fayda_verified,csat,sentiment,products)
+                    VALUES (:p,'Selam T.','selam@example.com','Ethio Telecom','Amharic','Gold',
+                    'Three contacts this week about SIM and telebirr. Identity verified with Fayda.',1,5.0,'Neutral','Prepaid plan | telebirr wallet')")
+                    ->execute([':p' => $selamPhone]);
+            } catch (Throwable $eIns) { /* unique race */ }
+        } else {
+            try {
+                $db->prepare("UPDATE skykin_contacts SET
+                    full_name='Selam T.', account_type='Gold', language='Amharic',
+                    fayda_verified=1, csat=5.0, sentiment='Neutral',
+                    products='Prepaid plan | telebirr wallet',
+                    notes='Three contacts this week about SIM and telebirr. Identity verified with Fayda.'
+                    WHERE phone = :p OR phone LIKE :t")
+                    ->execute([':p' => $selamPhone, ':t' => '%911234567%']);
+            } catch (Throwable $eUp) { /* columns may be missing on first run */ }
+        }
+        $jc = $db->prepare("SELECT COUNT(*) FROM skykin_journey_events WHERE phone = :p OR phone LIKE :t");
+        $jc->execute([':p' => $selamPhone, ':t' => '%911234567%']);
+        if ((int)$jc->fetchColumn() === 0) {
+            $ins = $db->prepare("INSERT INTO skykin_journey_events (phone, event_at, channel, summary) VALUES (:p,:t,:c,:s)");
+            $demo = [
+                [date('Y-m-d') . ' 10:12:00', 'Voice', 'Lost phone, asks for SIM swap'],
+                [date('Y-m-d') . ' 09:40:00', 'Web chat', 'Bot shared the SIM swap article'],
+                [date('Y-m-d', strtotime('-1 day')) . ' 16:20:00', 'WhatsApp', 'Asked about telebirr limit'],
+                [date('Y-m-d', strtotime('-3 day')) . ' 11:05:00', 'App', 'Viewed data packages'],
+                [date('Y-m-d', strtotime('-7 day')) . ' 14:00:00', 'Shop', 'SIM registered with Fayda'],
+                [date('Y-m-d', strtotime('-30 day')) . ' 09:00:00', 'SMS survey', 'CSAT 5 out of 5'],
+            ];
+            foreach ($demo as $d) {
+                $ins->execute([':p' => $selamPhone, ':t' => $d[0], ':c' => $d[1], ':s' => $d[2]]);
+            }
+        }
+        try {
+            $chkCase = $db->prepare("SELECT COUNT(*) FROM skykin_cases WHERE customer_phone LIKE :t AND LOWER(COALESCE(status,'')) NOT IN ('closed','resolved')");
+            $chkCase->execute([':t' => '%911234567%']);
+            if ((int)$chkCase->fetchColumn() === 0) {
+                $db->prepare("INSERT INTO skykin_cases (customer_name, customer_phone, issue_type, description, status, priority)
+                    VALUES ('Selam T.', :p, 'SIM replacement', 'Lost phone — SIM swap', 'Open', 'High')")
+                    ->execute([':p' => $selamPhone]);
+            }
+        } catch (Throwable $e2) { /* cases table may differ */ }
+    } catch (Throwable $e) { /* ignore seed errors */ }
 } catch (Exception $e) { /* silent */ }
 
 // ── API ──────────────────────────────────────────────────────────────────────
@@ -74,8 +129,8 @@ if (isset($_GET['api'])) {
     try {
         $db = getDB();
 
-        // Lookup by phone (partial match) – used for caller ID popup
-        if ($_GET['api'] === 'lookup') {
+        // Lookup by phone — full Customer 360 payload
+        if ($_GET['api'] === 'lookup' || $_GET['api'] === '360') {
             $phone = $_GET['phone'] ?? '';
             if (!$phone) { echo json_encode(null); exit; }
             $row = skykin_crm_find_contact($db, $phone);
@@ -85,24 +140,383 @@ if (isset($_GET['api'])) {
                     $row = skykin_crm_find_contact($db, $norm);
                 }
             }
-            // Also get call history for this contact
-            if ($row) {
-                $clean = preg_replace('/^(\+251|00251|0)/', '', $phone);
-                $isSQLite = ($db->getAttribute(PDO::ATTR_DRIVER_NAME) === 'sqlite');
-                $timeExpr = $isSQLite
-                    ? "datetime(start_epoch, 'unixepoch', 'localtime')"
-                    : skykin_cdr_time_sql('YYYY-MM-DD HH24:MI');
-                $s2 = $db->prepare("SELECT
-                    {$timeExpr} as call_time,
-                    direction, billsec, destination_number, hangup_cause
-                    FROM v_xml_cdr
-                    WHERE (caller_id_number LIKE :q OR destination_number LIKE :q
-                        OR caller_id_number LIKE :c OR destination_number LIKE :c)
-                    ORDER BY start_epoch DESC LIMIT 5");
-                $s2->execute([':q'=>'%'.$phone.'%',':c'=>'%'.$clean.'%']);
-                $row['call_history'] = $s2->fetchAll(PDO::FETCH_ASSOC);
+            // Always return 360 shape (even unknown caller) so UI can show CDR journey
+            $out = skykin_crm_build_360($db, $phone, $row);
+            if (!$row && empty($out['call_history']) && empty($out['journey'])) {
+                // keep null for strict unknown with no activity
+                if (($_GET['api'] ?? '') === 'lookup' && empty($out['full_name'])) {
+                    echo json_encode($out);
+                    exit;
+                }
             }
-            echo json_encode($row);
+            echo json_encode($out);
+            exit;
+        }
+
+        // Add a journey event (demo / agent notes on history track)
+        if ($_GET['api'] === 'journey_add' && $_SERVER['REQUEST_METHOD'] === 'POST') {
+            skykin_crm_ensure_journey($db);
+            $body = json_decode(file_get_contents('php://input'), true);
+            if (!is_array($body)) {
+                echo json_encode(['ok' => false, 'error' => 'Invalid JSON']);
+                exit;
+            }
+            $rawPhone = trim((string)($body['phone'] ?? ''));
+            $digits = preg_replace('/\D+/', '', $rawPhone);
+            // Keep short extensions (101/102) as-is — do not turn into 0…
+            if (preg_match('/^\d{2,6}$/', $digits)) {
+                $ph = $digits;
+            } else {
+                $ph = skykin_normalize_phone_storage($rawPhone);
+            }
+            $channel = trim((string)($body['channel'] ?? 'CRM'));
+            $summary = trim((string)($body['summary'] ?? ''));
+            $eventAt = trim((string)($body['event_at'] ?? ''));
+            if ($ph === '' || $summary === '') {
+                echo json_encode(['ok' => false, 'error' => 'phone and summary required']);
+                exit;
+            }
+            if ($eventAt === '') {
+                $eventAt = date('Y-m-d H:i:s');
+            }
+            $allowed = ['Voice','Web chat','WhatsApp','App','Shop','SMS','SMS survey','Case','CRM'];
+            if (!in_array($channel, $allowed, true)) {
+                $channel = 'CRM';
+            }
+            $s = $db->prepare("INSERT INTO skykin_journey_events (phone, event_at, channel, summary) VALUES (:p,:t,:c,:s)");
+            $s->execute([':p' => $ph, ':t' => $eventAt, ':c' => $channel, ':s' => $summary]);
+            echo json_encode(['ok' => true, 'phone' => $ph, 'channel' => $channel]);
+            exit;
+        }
+
+        // List cases (call reason + status) — also import saved wrap-up journey reasons
+        if ($_GET['api'] === 'cases') {
+            skykin_crm_ensure_cases($db);
+            $synced = 0;
+            try {
+                $synced = skykin_crm_sync_cases_from_journey($db);
+            } catch (Throwable $eSync) {
+                $synced = 0;
+            }
+            $isSqlite = ($db->getAttribute(PDO::ATTR_DRIVER_NAME) === 'sqlite');
+            $dateFmt = $isSqlite
+                ? "strftime('%Y-%m-%d %H:%M', created_at)"
+                : "to_char(created_at,'YYYY-MM-DD HH24:MI')";
+            $phone = trim((string)($_GET['phone'] ?? ''));
+            $status = trim((string)($_GET['status'] ?? ''));
+            $where = '1=1';
+            $params = [];
+            if ($phone !== '') {
+                $digits = preg_replace('/\D+/', '', $phone);
+                if (preg_match('/^\d{2,6}$/', $digits)) {
+                    $where .= ' AND (customer_phone = :p OR customer_phone LIKE :p2)';
+                    $params[':p'] = $digits;
+                    $params[':p2'] = $digits . '@%';
+                } else {
+                    $where .= ' AND (customer_phone LIKE :q OR customer_phone LIKE :t)';
+                    $params[':q'] = '%' . $phone . '%';
+                    $params[':t'] = '%' . substr($digits, -9) . '%';
+                }
+            }
+            if ($status !== '' && strcasecmp($status, 'All') !== 0) {
+                $where .= ' AND status = :st';
+                $params[':st'] = $status;
+            }
+            $casesOut = [];
+            try {
+                $s = $db->prepare("SELECT case_id, {$dateFmt} as created_at,
+                    customer_name, customer_phone, issue_type, description, status, priority, agent_id, department
+                    FROM skykin_cases WHERE {$where}
+                    ORDER BY created_at DESC LIMIT 200");
+                $s->execute($params);
+                $casesOut = $s->fetchAll(PDO::FETCH_ASSOC);
+            } catch (Throwable $eList) {
+                $s = $db->prepare("SELECT case_id, created_at,
+                    customer_name, customer_phone, issue_type, description, status, priority, agent_id
+                    FROM skykin_cases WHERE {$where}
+                    ORDER BY created_at DESC LIMIT 200");
+                $s->execute($params);
+                $casesOut = $s->fetchAll(PDO::FETCH_ASSOC);
+            }
+            $flags = JSON_UNESCAPED_UNICODE;
+            if (defined('JSON_INVALID_UTF8_SUBSTITUTE')) {
+                $flags |= JSON_INVALID_UTF8_SUBSTITUTE;
+            }
+            $json = json_encode([
+                'ok' => true,
+                'synced_from_journey' => $synced,
+                'cases' => $casesOut,
+            ], $flags);
+            if (!is_string($json) || $json === '') {
+                $json = json_encode(['ok' => true, 'cases' => [], 'error' => 'json_encode']);
+            }
+            echo $json;
+            exit;
+        }
+
+        // Create / update case from wrap-up (reason + outcome/status)
+        if ($_GET['api'] === 'case_save' && $_SERVER['REQUEST_METHOD'] === 'POST') {
+            skykin_crm_ensure_cases($db);
+            $body = json_decode(file_get_contents('php://input'), true);
+            if (!is_array($body)) {
+                echo json_encode(['ok' => false, 'error' => 'Invalid JSON']);
+                exit;
+            }
+            $rawPhone = trim((string)($body['phone'] ?? ''));
+            $digits = preg_replace('/\D+/', '', $rawPhone);
+            if (preg_match('/^\d{2,6}$/', $digits)) {
+                $ph = $digits;
+            } else {
+                $ph = skykin_normalize_phone_storage($rawPhone);
+            }
+            $reason = trim((string)($body['reason'] ?? $body['issue_type'] ?? ''));
+            $notes = trim((string)($body['notes'] ?? $body['description'] ?? ''));
+            $outcome = trim((string)($body['outcome'] ?? ''));
+            $status = trim((string)($body['status'] ?? ''));
+            if ($status === '' && $outcome !== '') {
+                $status = skykin_crm_outcome_to_case_status($outcome);
+            }
+            if ($status === '') {
+                $status = 'Open';
+            }
+            $name = trim((string)($body['customer_name'] ?? ''));
+            $agent = trim((string)($body['agent_id'] ?? ($_SESSION['username'] ?? '')));
+            $priority = trim((string)($body['priority'] ?? 'Medium'));
+            if ($priority === '') {
+                $priority = 'Medium';
+            }
+            if ($ph === '' || $reason === '') {
+                echo json_encode(['ok' => false, 'error' => 'phone and reason required']);
+                exit;
+            }
+            if ($name === '') {
+                $c = skykin_crm_find_contact($db, $ph);
+                $name = trim((string)($c['full_name'] ?? ''));
+                if ($name === '') {
+                    $name = $ph;
+                }
+            }
+            $desc = $notes !== '' ? $notes : ($outcome !== '' ? ('Outcome: ' . $outcome) : $reason);
+
+            // Each wrap-up = its own case row (reason + status), do not collapse into one open case
+            $db->prepare("INSERT INTO skykin_cases
+                (customer_name, customer_phone, issue_type, description, status, priority, agent_id, department)
+                VALUES (:n,:p,:r,:d,:st,:pr,:a,'Voice')")
+                ->execute([
+                    ':n' => $name,
+                    ':p' => $ph,
+                    ':r' => $reason,
+                    ':d' => $desc,
+                    ':st' => $status,
+                    ':pr' => $priority,
+                    ':a' => $agent,
+                ]);
+            $newId = (int)$db->lastInsertId();
+            echo json_encode(['ok' => true, 'case_id' => $newId, 'updated' => false, 'status' => $status]);
+            exit;
+        }
+
+        // Knowledge base — list / search articles
+        if ($_GET['api'] === 'knowledge') {
+            skykin_crm_ensure_knowledge($db);
+            try {
+                skykin_crm_seed_knowledge($db);
+            } catch (Throwable $e) { /* ignore */ }
+            $isSqlite = ($db->getAttribute(PDO::ATTR_DRIVER_NAME) === 'sqlite');
+            $dateFmt = $isSqlite
+                ? "strftime('%Y-%m-%d %H:%M', updated_at)"
+                : "to_char(updated_at,'YYYY-MM-DD HH24:MI')";
+            $q = trim((string)($_GET['q'] ?? $_GET['search'] ?? ''));
+            $id = (int)($_GET['id'] ?? 0);
+            if ($id > 0) {
+                $s = $db->prepare("SELECT article_id, title, tag, body, keywords, {$dateFmt} as updated_at
+                    FROM skykin_knowledge WHERE article_id = :id LIMIT 1");
+                $s->execute([':id' => $id]);
+                $row = $s->fetch(PDO::FETCH_ASSOC);
+                echo json_encode(['ok' => true, 'article' => $row ?: null]);
+                exit;
+            }
+            if ($q !== '') {
+                $like = '%' . $q . '%';
+                $s = $db->prepare("SELECT article_id, title, tag, keywords, {$dateFmt} as updated_at,
+                    SUBSTR(body, 1, 160) as excerpt
+                    FROM skykin_knowledge
+                    WHERE title LIKE :q OR body LIKE :q OR COALESCE(keywords,'') LIKE :q
+                    ORDER BY updated_at DESC LIMIT 50");
+                $s->execute([':q' => $like]);
+            } else {
+                $s = $db->query("SELECT article_id, title, tag, keywords, {$dateFmt} as updated_at,
+                    SUBSTR(body, 1, 160) as excerpt
+                    FROM skykin_knowledge ORDER BY updated_at DESC LIMIT 50");
+            }
+            echo json_encode(['ok' => true, 'articles' => $s->fetchAll(PDO::FETCH_ASSOC)]);
+            exit;
+        }
+
+        if ($_GET['api'] === 'knowledge_save' && $_SERVER['REQUEST_METHOD'] === 'POST') {
+            if (!skykin_user_in_groups(['admin', 'superadmin', 'supervisor'])) {
+                http_response_code(403);
+                echo json_encode(['ok' => false, 'error' => 'Access denied']);
+                exit;
+            }
+            skykin_crm_ensure_knowledge($db);
+            $body = json_decode(file_get_contents('php://input'), true);
+            if (!is_array($body)) {
+                echo json_encode(['ok' => false, 'error' => 'Invalid JSON']);
+                exit;
+            }
+            $id = (int)($body['article_id'] ?? 0);
+            $title = trim((string)($body['title'] ?? ''));
+            $tag = trim((string)($body['tag'] ?? 'Guide')) ?: 'Guide';
+            $kb = trim((string)($body['body'] ?? ''));
+            $kw = trim((string)($body['keywords'] ?? ''));
+            if ($title === '' || $kb === '') {
+                echo json_encode(['ok' => false, 'error' => 'Title and body required']);
+                exit;
+            }
+            if ($id > 0) {
+                $db->prepare("UPDATE skykin_knowledge SET title=:t, tag=:g, body=:b, keywords=:k, updated_at=NOW() WHERE article_id=:id")
+                    ->execute([':t' => $title, ':g' => $tag, ':b' => $kb, ':k' => $kw, ':id' => $id]);
+                echo json_encode(['ok' => true, 'article_id' => $id, 'updated' => true]);
+                exit;
+            }
+            $db->prepare("INSERT INTO skykin_knowledge (title, tag, body, keywords) VALUES (:t,:g,:b,:k)")
+                ->execute([':t' => $title, ':g' => $tag, ':b' => $kb, ':k' => $kw]);
+            echo json_encode(['ok' => true, 'article_id' => (int)$db->lastInsertId(), 'updated' => false]);
+            exit;
+        }
+
+        // Update case status only
+        if ($_GET['api'] === 'case_status' && $_SERVER['REQUEST_METHOD'] === 'POST') {
+            skykin_crm_ensure_cases($db);
+            $body = json_decode(file_get_contents('php://input'), true);
+            if (!is_array($body)) {
+                echo json_encode(['ok' => false, 'error' => 'Invalid JSON']);
+                exit;
+            }
+            $caseId = (int)($body['case_id'] ?? 0);
+            $status = trim((string)($body['status'] ?? ''));
+            $allowed = ['Open', 'Follow-up', 'Escalated', 'In Progress', 'Resolved', 'Closed', 'Received', 'Pending'];
+            if ($caseId <= 0 || $status === '' || !in_array($status, $allowed, true)) {
+                echo json_encode(['ok' => false, 'error' => 'Invalid case_id or status']);
+                exit;
+            }
+            $db->prepare("UPDATE skykin_cases SET status = :st WHERE case_id = :id")
+                ->execute([':st' => $status, ':id' => $caseId]);
+            echo json_encode(['ok' => true, 'case_id' => $caseId, 'status' => $status]);
+            exit;
+        }
+
+        // Seed full mockup journey for a phone (Selam-style demo)
+        if ($_GET['api'] === 'journey_seed' && $_SERVER['REQUEST_METHOD'] === 'POST') {
+            skykin_crm_ensure_contacts($db);
+            skykin_crm_ensure_journey($db);
+            $body = json_decode(file_get_contents('php://input'), true);
+            if (!is_array($body)) {
+                echo json_encode(['ok' => false, 'error' => 'Invalid JSON']);
+                exit;
+            }
+            $ph = skykin_normalize_phone_storage((string)($body['phone'] ?? '+251911234567'));
+            $name = trim((string)($body['full_name'] ?? 'Selam T.'));
+            if ($ph === '') {
+                echo json_encode(['ok' => false, 'error' => 'phone required']);
+                exit;
+            }
+            // Upsert contact profile for demo
+            $ex = $db->prepare("SELECT contact_id FROM skykin_contacts WHERE phone = :p LIMIT 1");
+            $ex->execute([':p' => $ph]);
+            $id = $ex->fetchColumn();
+            if ($id) {
+                $db->prepare("UPDATE skykin_contacts SET full_name=:n, account_type='Gold', language='Amharic',
+                    fayda_verified=1, csat=5.0, sentiment='Neutral',
+                    products='Prepaid plan | telebirr wallet',
+                    notes='Three contacts this week about SIM and telebirr. Identity verified with Fayda.',
+                    updated_at=NOW()
+                    WHERE contact_id=:id")->execute([':n' => $name, ':id' => $id]);
+            } else {
+                try {
+                    $db->prepare("INSERT INTO skykin_contacts
+                        (phone,full_name,language,account_type,notes,fayda_verified,csat,sentiment,products)
+                        VALUES (:p,:n,'Amharic','Gold','Three contacts this week about SIM and telebirr. Identity verified with Fayda.',1,5.0,'Neutral','Prepaid plan | telebirr wallet')")
+                        ->execute([':p' => $ph, ':n' => $name]);
+                } catch (Throwable $e) {
+                    // SQLite NOW() may fail on updated_at path above only
+                }
+            }
+            $db->prepare("DELETE FROM skykin_journey_events WHERE phone = :p")->execute([':p' => $ph]);
+            $ins = $db->prepare("INSERT INTO skykin_journey_events (phone, event_at, channel, summary) VALUES (:p,:t,:c,:s)");
+            $demo = [
+                [date('Y-m-d') . ' 10:12:00', 'Voice', 'Lost phone, asks for SIM swap'],
+                [date('Y-m-d') . ' 09:40:00', 'Web chat', 'Bot shared the SIM swap article'],
+                [date('Y-m-d', strtotime('-1 day')) . ' 16:20:00', 'WhatsApp', 'Asked about telebirr limit'],
+                [date('Y-m-d', strtotime('-3 day')) . ' 11:05:00', 'App', 'Viewed data packages'],
+                [date('Y-m-d', strtotime('-7 day')) . ' 14:00:00', 'Shop', 'SIM registered with Fayda'],
+                [date('Y-m-d', strtotime('-30 day')) . ' 09:00:00', 'SMS survey', 'CSAT 5 out of 5'],
+            ];
+            foreach ($demo as $d) {
+                $ins->execute([':p' => $ph, ':t' => $d[0], ':c' => $d[1], ':s' => $d[2]]);
+            }
+            try {
+                $chk = $db->prepare("SELECT COUNT(*) FROM skykin_cases WHERE customer_phone = :p AND LOWER(COALESCE(status,'')) NOT IN ('closed','resolved')");
+                $chk->execute([':p' => $ph]);
+                if ((int)$chk->fetchColumn() === 0) {
+                    $db->prepare("INSERT INTO skykin_cases (customer_name, customer_phone, issue_type, description, status, priority)
+                        VALUES (:n,:p,'SIM replacement','Lost phone — SIM swap','Open','High')")
+                        ->execute([':n' => $name, ':p' => $ph]);
+                }
+            } catch (Throwable $e) { /* ignore */ }
+            echo json_encode(['ok' => true, 'phone' => $ph, 'events' => count($demo)]);
+            exit;
+        }
+
+        // AI summary refresh for Customer 360 (Gemini/local if configured)
+        if ($_GET['api'] === 'ai_summary' && $_SERVER['REQUEST_METHOD'] === 'POST') {
+            $body = json_decode(file_get_contents('php://input'), true);
+            if (!is_array($body)) {
+                echo json_encode(['ok' => false, 'error' => 'Invalid JSON']);
+                exit;
+            }
+            $phone = (string)($body['phone'] ?? '');
+            $payload = skykin_crm_build_360($db, $phone, skykin_crm_find_contact($db, $phone));
+            $summary = (string)($payload['ai_summary'] ?? '');
+            $next = (string)($payload['next_best_action'] ?? '');
+            $provider = 'rules';
+            if (is_file(__DIR__ . '/skykin_ai.php')) {
+                require_once __DIR__ . '/skykin_ai.php';
+                if (function_exists('skykin_ai_ready') && skykin_ai_ready() && function_exists('skykin_ai_chat_json')) {
+                    $journeyLines = [];
+                    foreach (array_slice($payload['journey'] ?? [], 0, 12) as $j) {
+                        $journeyLines[] = trim(($j['event_at'] ?? '') . ' | ' . ($j['channel'] ?? '') . ': ' . ($j['summary'] ?? ''));
+                    }
+                    $sys = 'You are a call-center coach for Ethio Telecom SkyConnect. '
+                        . 'Return JSON only: {"summary":"2 short sentences","next_best_action":"one imperative sentence"}. '
+                        . 'Be specific to SIM, telebirr, Fayda when present. Do not invent facts.';
+                    $user = "Customer: " . ($payload['full_name'] ?? '') . "\nPhone: {$phone}\n"
+                        . "Products: " . ($payload['products'] ?? '') . "\n"
+                        . "Fayda: " . (!empty($payload['fayda_verified']) ? 'yes' : 'no') . "\n"
+                        . "Open cases: " . (int)($payload['open_case_count'] ?? 0) . "\n"
+                        . "Journey:\n" . implode("\n", $journeyLines);
+                    $ai = skykin_ai_chat_json($sys, $user);
+                    if (!empty($ai['ok']) && is_array($ai['data'] ?? null)) {
+                        $d = $ai['data'];
+                        if (!empty($d['summary'])) {
+                            $summary = (string)$d['summary'];
+                        }
+                        if (!empty($d['next_best_action'])) {
+                            $next = (string)$d['next_best_action'];
+                        } elseif (!empty($d['next'])) {
+                            $next = (string)$d['next'];
+                        }
+                        $provider = (string)($ai['provider'] ?? 'skykin_ai');
+                    }
+                }
+            }
+            echo json_encode([
+                'ok' => true,
+                'ai_summary' => $summary,
+                'next_best_action' => $next,
+                'provider' => $provider,
+            ]);
             exit;
         }
 
@@ -125,29 +539,58 @@ if (isset($_GET['api'])) {
 
         // Save / update contact
         if ($_GET['api'] === 'save' && $_SERVER['REQUEST_METHOD'] === 'POST') {
+            skykin_crm_ensure_contacts($db);
             $body = json_decode(file_get_contents('php://input'), true);
             $id   = $body['contact_id'] ?? null;
             $isSQLite = ($db->getAttribute(PDO::ATTR_DRIVER_NAME) === 'sqlite');
             $nowFunc = $isSQLite ? "datetime('now')" : "NOW()";
+            $rawPh = trim((string)($body['phone'] ?? ''));
+            $digPh = preg_replace('/\D+/', '', $rawPh);
+            $ph = preg_match('/^\d{2,6}$/', $digPh) ? $digPh : skykin_normalize_phone_storage($rawPh);
+            $rawAp = trim((string)($body['alt_phone'] ?? ''));
+            $digAp = preg_replace('/\D+/', '', $rawAp);
+            $ap = $rawAp === '' ? '' : (preg_match('/^\d{2,6}$/', $digAp) ? $digAp : skykin_normalize_phone_storage($rawAp));
+            $fn = trim((string)($body['full_name'] ?? ''));
+            if ($ph === '' || $fn === '') {
+                echo json_encode(['ok' => false, 'error' => 'Name and phone are required']);
+                exit;
+            }
+            $fayda = !empty($body['fayda_verified']) ? 1 : 0;
+            $csat = isset($body['csat']) && $body['csat'] !== '' && $body['csat'] !== null
+                ? (float)$body['csat'] : null;
+            $sentiment = trim((string)($body['sentiment'] ?? 'Neutral'));
+            if ($sentiment === '') $sentiment = 'Neutral';
+            $products = trim((string)($body['products'] ?? ''));
+            $params = [
+                ':ph' => $ph,
+                ':ap' => $ap,
+                ':fn' => $fn,
+                ':em' => trim((string)($body['email'] ?? '')),
+                ':co' => trim((string)($body['company'] ?? '')),
+                ':la' => trim((string)($body['language'] ?? 'Amharic')) ?: 'Amharic',
+                ':at' => trim((string)($body['account_type'] ?? 'Customer')) ?: 'Customer',
+                ':no' => trim((string)($body['notes'] ?? '')),
+                ':fy' => $fayda,
+                ':cs' => $csat,
+                ':se' => $sentiment,
+                ':pr' => $products,
+            ];
             if ($id) {
                 $s = $db->prepare("UPDATE skykin_contacts SET
                     phone=:ph, alt_phone=:ap, full_name=:fn, email=:em,
                     company=:co, language=:la, account_type=:at, notes=:no,
+                    fayda_verified=:fy, csat=:cs, sentiment=:se, products=:pr,
                     updated_at={$nowFunc} WHERE contact_id=:id");
-                $s->execute([':ph'=>skykin_normalize_phone_storage($body['phone']??''),':ap'=>skykin_normalize_phone_storage($body['alt_phone']??''),
-                    ':fn'=>$body['full_name']??'',':em'=>$body['email']??'',
-                    ':co'=>$body['company']??'',':la'=>$body['language']??'English',
-                    ':at'=>$body['account_type']??'Customer',':no'=>$body['notes']??'',':id'=>$id]);
-                echo json_encode(['ok'=>true,'action'=>'updated']);
+                $params[':id'] = (int)$id;
+                $s->execute($params);
+                echo json_encode(['ok'=>true,'action'=>'updated','contact_id'=>(int)$id,'phone'=>$ph]);
             } else {
                 $s = $db->prepare("INSERT INTO skykin_contacts
-                    (phone,alt_phone,full_name,email,company,language,account_type,notes)
-                    VALUES (:ph,:ap,:fn,:em,:co,:la,:at,:no)");
-                $s->execute([':ph'=>skykin_normalize_phone_storage($body['phone']??''),':ap'=>skykin_normalize_phone_storage($body['alt_phone']??''),
-                    ':fn'=>$body['full_name']??'',':em'=>$body['email']??'',
-                    ':co'=>$body['company']??'',':la'=>$body['language']??'English',
-                    ':at'=>$body['account_type']??'Customer',':no'=>$body['notes']??'']);
-                echo json_encode(['ok'=>true,'action'=>'created']);
+                    (phone,alt_phone,full_name,email,company,language,account_type,notes,fayda_verified,csat,sentiment,products)
+                    VALUES (:ph,:ap,:fn,:em,:co,:la,:at,:no,:fy,:cs,:se,:pr)");
+                $s->execute($params);
+                $newId = (int)$db->lastInsertId();
+                echo json_encode(['ok'=>true,'action'=>'created','contact_id'=>$newId,'phone'=>$ph]);
             }
             exit;
         }
@@ -165,7 +608,7 @@ if (isset($_GET['api'])) {
             exit;
         }
 
-    } catch (Exception $e) { echo json_encode(['error'=>$e->getMessage()]); }
+    } catch (Throwable $e) { echo json_encode(['ok' => false, 'error' => $e->getMessage(), 'cases' => []]); }
     exit;
 }
 ?>

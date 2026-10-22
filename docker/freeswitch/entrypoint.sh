@@ -554,6 +554,14 @@ CDRVARS
   CDR_VARS=$(printf '%s' "$CDR_VARS" | sed "s#@FS_DOMAIN@#${FS_DOMAIN}#g")
   SKYKIN_EXTENSIONS=$(cat <<DPEOF
 
+  <extension name="skykin_webrtc_aleg" continue="true">
+    <condition field="destination_number" expression="^.+\$">
+      <action application="set" data="media_webrtc=true"/>
+      <action application="set" data="rtp_secure_media=true"/>
+${RTP_ADV}
+    </condition>
+  </extension>
+
   <extension name="skykin_queue">
     <condition field="destination_number" expression="^(${FS_QUEUE_EXT})\$">
       <action application="answer"/>
@@ -583,8 +591,12 @@ ${CDR_VARS}
 
   <extension name="skykin_echo_test">
     <condition field="destination_number" expression="^9196\$">
+      <action application="export" data="media_webrtc=true"/>
+      <action application="export" data="rtp_secure_media=true"/>
 ${RTP_ADV}
       <action application="answer"/>
+      <action application="sleep" data="800"/>
+      <action application="playback" data="tone_stream://%(400,200,1000,1200);%(400,200,1000,1200);%(400,800,1000,1200)"/>
       <action application="echo"/>
     </condition>
   </extension>
