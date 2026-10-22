@@ -52,11 +52,11 @@ export default function AdminConsole() {
           onClick={() => {
             setReloadMsg('');
             save('reloadxml', {})
-              .then(() => setReloadMsg('Dialplan reloaded'))
-              .catch((e) => setReloadMsg(e instanceof Error ? e.message : 'Reload failed'));
+              .then(() => setReloadMsg('Data synced'))
+              .catch((e) => setReloadMsg(e instanceof Error ? e.message : 'Sync failed'));
           }}
         >
-          Reload dialplan
+          Sync data
         </button>
         {reloadMsg ? <p className="mt-2 text-sm font-bold">{reloadMsg}</p> : null}
       </div>

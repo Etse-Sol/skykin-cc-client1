@@ -851,7 +851,7 @@ export function AdminSettings() {
     }
   };
   return (
-    <StudioPage title="Settings" path="/admin/settings" blurb="Idle logout, after-hours, and dialplan reload">
+    <StudioPage title="Settings" path="/admin/settings" blurb="Idle logout, after-hours, and data sync">
       {err ? <p className="text-sm text-[var(--color-sc-warn)]">{err}</p> : null}
       <div className="grid gap-4 lg:grid-cols-2">
         <section className="sc-card">
@@ -877,11 +877,11 @@ export function AdminSettings() {
             className="sc-btn mt-3"
             onClick={() =>
               void save('reloadxml', {})
-                .then(() => setMsg('Dialplan reloaded'))
-                .catch((e) => setMsg(e instanceof Error ? e.message : 'Reload failed'))
+                .then(() => setMsg('Data synced'))
+                .catch((e) => setMsg(e instanceof Error ? e.message : 'Sync failed'))
             }
           >
-            Reload dialplan
+            Sync data
           </button>
         </section>
         <section className="sc-card lg:col-span-2">
