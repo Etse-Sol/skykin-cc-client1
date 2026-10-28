@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { fetchAgentSession } from '../../services/session';
 import { fetchHourlyVolume, fetchReportSummary, todayRange } from '../../services/ops';
+import BreakRequests from '../../components/BreakRequests';
 import {
   fetchLeaveRequests,
   fetchSupAgents,
   fetchSupQueue,
   fmtHms,
   fmtSec,
-  resolveLeave,
   statusLabel,
   type LeaveRequest,
   type SupAgent,
@@ -281,59 +281,16 @@ export default function Wallboard() {
               ))
             )}
           </div>
-          <div className="sc-card">
-            <h2 className="text-[16px] font-bold">
-              Break requests
-              {leaves.length ? (
-                <span className="ml-2 rounded-full bg-orange-500 px-2 py-0.5 text-[10px] font-bold text-white">
-                  {leaves.length}
-                </span>
-              ) : null}
-            </h2>
-            {leaves.length === 0 ? (
-              <p className="mt-2 sc-meta">No pending break requests</p>
-            ) : (
-              <ul className="mt-3 space-y-2">
-                {leaves.map((lv) => (
-                  <li key={lv.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-[var(--color-sc-line)] px-3 py-2">
-                    <div>
-                      <p className="text-sm font-semibold">
-                        {lv.agent_name || lv.agent_ext} · ext {lv.agent_ext}
-                      </p>
-                      <p className="sc-meta">
-                        {lv.request_type || 'On Break'}
-                        {lv.reason ? ` — ${lv.reason}` : ''}
-                      </p>
-                    </div>
-                    <div className="flex gap-2">
-                      <button
-                        type="button"
-                        className="sc-btn"
-                        onClick={async () => {
-                          const r = await resolveLeave(domain, lv.id, 'approved');
-                          setMsg(r.ok ? `Approved ${lv.agent_ext}` : r.error || 'Failed');
-                          void load();
-                        }}
-                      >
-                        Approve
-                      </button>
-                      <button
-                        type="button"
-                        className="sc-b2"
-                        onClick={async () => {
-                          const r = await resolveLeave(domain, lv.id, 'denied');
-                          setMsg(r.ok ? `Denied ${lv.agent_ext}` : r.error || 'Failed');
-                          void load();
-                        }}
-                      >
-                        Deny
-                      </button>
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
+          <BreakRequests
+            domain={domain}
+            leaves={leaves}
+            agents={agents}
+            waiting={queue?.waiting_callers?.length ?? Number(queue?.queues?.reduce((n, r) => n + (r.waiting || 0), 0) || 0)}
+            onDone={(m) => {
+              setMsg(m);
+              void load();
+            }}
+          />
         </>
       ) : null}
     </div>

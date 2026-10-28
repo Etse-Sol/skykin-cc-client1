@@ -28,7 +28,10 @@
 	require_once __DIR__ . "/resources/require.php";
 
 //use custom logout destination if set otherwise redirect to the login page
-	$logout_destination = $settings->get('login', 'logout_destination', PROJECT_PATH.'/login.php');
+	$logout_destination = $settings->get('login', 'logout_destination', '/');
+	if ($logout_destination === '' || $logout_destination === PROJECT_PATH.'/login.php' || strpos((string)$logout_destination, 'skyconnect_signin') !== false || strpos((string)$logout_destination, 'login.php') !== false) {
+		$logout_destination = '/';
+	}
 
 //record who logged out and from where (temporary diagnostics)
 	require_once __DIR__ . "/resources/skykin_session_log.php";

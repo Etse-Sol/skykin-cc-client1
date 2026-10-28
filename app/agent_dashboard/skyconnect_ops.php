@@ -11,6 +11,9 @@ header('Cache-Control: no-store');
 
 skykin_require_login(true);
 skykin_session_touch();
+if (function_exists('session_write_close')) {
+	session_write_close();
+}
 
 $op = trim((string)($_GET['op'] ?? $_GET['api'] ?? ''));
 $dom = skykin_domain_param($_GET['domain'] ?? null);
@@ -172,9 +175,16 @@ function sc_ops_load_users(PDO $db, string $du): array {
 	} catch (Throwable $ex) {
 		/* ignore */
 	}
+	$skills = [];
+	try {
+		$skills = sc_ops_load_user_skills($db, $du);
+	} catch (Throwable $eSk) {
+		$skills = [];
+	}
 	$out = [];
 	foreach ($by as $row) {
 		$row['groups'] = implode(', ', $row['group_list']);
+		$row['skills'] = $skills[(string)$row['user_uuid']] ?? [];
 		$out[] = $row;
 	}
 	return $out;
@@ -360,6 +370,105 @@ function sc_ops_reload_xml(): array {
 	return ['reloadxml' => $xml, 'memcache' => $mem];
 }
 
+/** @return array{ivr_menu_uuid:string,ivr_menu_extension:string} */
+function sc_ops_ivr_create_menu(PDO $db, string $du, string $dom, string $name, string $ext, string $greet = '', string $desc = ''): array {
+	if ($ext === '') {
+		$ext = sc_ops_next_service_ext($db, $du, 9000);
+	}
+	$id = sc_ops_uuid();
+	$dp = sc_ops_uuid();
+	$xml = "<extension name=\"".sc_ops_esc_xml($name)."\" continue=\"false\" uuid=\"".sc_ops_esc_xml($dp)."\">\n"
+		."	<condition field=\"destination_number\" expression=\"^".sc_ops_esc_xml($ext)."\$\">\n"
+		."		<action application=\"answer\" data=\"\"/>\n"
+		."		<action application=\"sleep\" data=\"1000\"/>\n"
+		."		<action application=\"set\" data=\"ivr_menu_uuid=".sc_ops_esc_xml($id)."\"/>\n"
+		."		<action application=\"ivr\" data=\"".sc_ops_esc_xml($id)."\"/>\n"
+		."	</condition>\n"
+		."</extension>\n";
+	try {
+		sc_ops_put_dialplan($db, $du, $dom, $dp, $name, $ext, $xml, '101', 'a5788e9b-58bc-bd1b-df59-fff5d51253ab');
+	} catch (Throwable $e) {
+		$dp = '';
+	}
+	$db->prepare(
+		"INSERT INTO v_ivr_menus (
+			ivr_menu_uuid, domain_uuid, dialplan_uuid, ivr_menu_name, ivr_menu_extension,
+			ivr_menu_greet_long, ivr_menu_greet_short, ivr_menu_invalid_sound, ivr_menu_exit_sound,
+			ivr_menu_confirm_attempts, ivr_menu_timeout, ivr_menu_inter_digit_timeout,
+			ivr_menu_max_failures, ivr_menu_max_timeouts, ivr_menu_digit_len, ivr_menu_direct_dial,
+			ivr_menu_ringback, ivr_menu_context, ivr_menu_enabled, ivr_menu_description,
+			ivr_menu_language, ivr_menu_dialect, ivr_menu_voice
+		) VALUES (
+			:id, :d, :dp, :n, :e,
+			:gl, :gs, 'ivr/ivr-that_was_an_invalid_entry.wav', 'voicemail/vm-goodbye.wav',
+			1, 3000, 2000, 3, 3, 5, false,
+			'local_stream://default', :ctx, true, :ds, 'en', 'us', 'callie'
+		)"
+	)->execute([
+		':id' => $id,
+		':d' => $du,
+		':dp' => $dp !== '' ? $dp : null,
+		':n' => $name,
+		':e' => $ext,
+		':gl' => $greet,
+		':gs' => $greet,
+		':ctx' => $dom,
+		':ds' => $desc !== '' ? $desc : 'SkyConnect IVR',
+	]);
+	return ['ivr_menu_uuid' => $id, 'ivr_menu_extension' => $ext];
+}
+
+function sc_ops_ivr_add_option(PDO $db, string $du, string $menu, string $digits, string $param, string $desc = '', string $action = 'menu-exec-app'): string {
+	$opt = sc_ops_uuid();
+	$db->prepare(
+		"INSERT INTO v_ivr_menu_options (ivr_menu_option_uuid, ivr_menu_uuid, domain_uuid,
+			ivr_menu_option_digits, ivr_menu_option_action, ivr_menu_option_param, ivr_menu_option_description, ivr_menu_option_order)
+		 VALUES (:id, :m, :d, :dig, :a, :p, :ds, :ord)"
+	)->execute([
+		':id' => $opt,
+		':m' => $menu,
+		':d' => $du,
+		':dig' => $digits,
+		':a' => $action !== '' ? $action : 'menu-exec-app',
+		':p' => $param,
+		':ds' => $desc,
+		':ord' => (int)$digits,
+	]);
+	return $opt;
+}
+
+function sc_ops_ivr_transfer_param(string $ext): string {
+	$e = preg_replace('/\D+/', '', $ext);
+	return 'transfer ' . $e . ' XML ${domain_name}';
+}
+
+/** @param array<int,mixed> $branches */
+function sc_ops_ivr_save_branches(PDO $db, string $du, string $dom, string $parentId, array $branches): void {
+	foreach ($branches as $b) {
+		if (!is_array($b)) {
+			continue;
+		}
+		$dig = trim((string)($b['digits'] ?? $b['digit'] ?? ''));
+		if ($dig === '') {
+			continue;
+		}
+		$param = trim((string)($b['param'] ?? ''));
+		$subName = trim((string)($b['new_submenu'] ?? $b['submenu'] ?? ''));
+		$desc = trim((string)($b['description'] ?? $b['label'] ?? ''));
+		if ($subName !== '') {
+			$child = sc_ops_ivr_create_menu($db, $du, $dom, $subName, '', '', $desc !== '' ? $desc : ('Submenu of ' . $subName));
+			$param = sc_ops_ivr_transfer_param($child['ivr_menu_extension']);
+			if ($desc === '') {
+				$desc = 'submenu ' . $subName;
+			}
+		}
+		if ($param === '') {
+			continue;
+		}
+		sc_ops_ivr_add_option($db, $du, $parentId, $dig, $param, $desc);
+	}
+}
+
 function sc_ops_write_did_map(PDO $db): void {
 	sc_ops_ensure_did_table($db);
 	$rows = [];
@@ -379,12 +488,14 @@ function sc_ops_write_did_map(PDO $db): void {
 }
 
 function sc_ops_write_hunt_map(PDO $db): void {
-	$txt = "# SKYKIN_HUNT_STAFF_v1 domain|ext  (if a domain has rows, Lua rings only those Ready agents)\n";
+	$txt = "# SKYKIN_HUNT_STAFF_v2 domain|queue_ext|agent_ext  (if a domain+queue has rows, Lua rings only those agents)\n";
 	try {
 		$rows = $db->query(
-			"SELECT COALESCE(t.domain_uuid, a.domain_uuid) AS domain_uuid, a.agent_id, a.agent_contact
+			"SELECT COALESCE(t.domain_uuid, a.domain_uuid, q.domain_uuid) AS domain_uuid,
+			        q.queue_extension, a.agent_id, a.agent_contact
 			 FROM v_call_center_tiers t
-			 JOIN v_call_center_agents a ON a.call_center_agent_uuid = t.call_center_agent_uuid"
+			 JOIN v_call_center_agents a ON a.call_center_agent_uuid = t.call_center_agent_uuid
+			 LEFT JOIN v_call_center_queues q ON q.call_center_queue_uuid = t.call_center_queue_uuid"
 		)->fetchAll(PDO::FETCH_ASSOC);
 		$domCache = [];
 		foreach ($rows as $r) {
@@ -398,12 +509,16 @@ function sc_ops_write_hunt_map(PDO $db): void {
 				$domCache[$du] = (string)$s->fetchColumn();
 			}
 			$dom = $domCache[$du];
+			$qext = preg_replace('/\D+/', '', (string)($r['queue_extension'] ?? ''));
+			if ($qext === '') {
+				$qext = '*';
+			}
 			$ext = preg_replace('/\D+/', '', (string)$r['agent_id']);
 			if ($ext === '' && preg_match('#user/([^@]+)@#', (string)($r['agent_contact'] ?? ''), $m)) {
 				$ext = preg_replace('/\D+/', '', $m[1]);
 			}
 			if ($dom !== '' && $ext !== '') {
-				$txt .= $dom . '|' . $ext . "\n";
+				$txt .= $dom . '|' . $qext . '|' . $ext . "\n";
 			}
 		}
 	} catch (Throwable $e) {
@@ -514,6 +629,232 @@ function sc_ops_ensure_cc_agent(PDO $db, string $du, string $dom, array $user): 
 		)"
 	)->execute([':id' => $id, ':d' => $du, ':u' => $uid, ':n' => $name, ':aid' => $ext, ':c' => $contact]);
 	return $id;
+}
+
+function sc_ops_default_skills(): array {
+	return [
+		['skill_key' => 'amharic', 'label' => 'Amharic', 'kind' => 'language', 'sort_order' => 1],
+		['skill_key' => 'english', 'label' => 'English', 'kind' => 'language', 'sort_order' => 2],
+		['skill_key' => 'oromo', 'label' => 'Afaan Oromo', 'kind' => 'language', 'sort_order' => 3],
+		['skill_key' => 'sim', 'label' => 'SIM / identity', 'kind' => 'product', 'sort_order' => 10],
+		['skill_key' => 'telebirr', 'label' => 'telebirr', 'kind' => 'product', 'sort_order' => 11],
+		['skill_key' => 'billing', 'label' => 'Billing', 'kind' => 'product', 'sort_order' => 12],
+		['skill_key' => 'general', 'label' => 'General', 'kind' => 'product', 'sort_order' => 20],
+	];
+}
+
+function sc_ops_ensure_skill_tables(PDO $db): void {
+	$drv = $db->getAttribute(PDO::ATTR_DRIVER_NAME);
+	if ($drv === 'sqlite') {
+		$db->exec("CREATE TABLE IF NOT EXISTS skykin_skills (
+			skill_key TEXT PRIMARY KEY,
+			label TEXT NOT NULL,
+			kind TEXT DEFAULT 'product',
+			sort_order INTEGER DEFAULT 0
+		)");
+		$db->exec("CREATE TABLE IF NOT EXISTS skykin_user_skills (
+			user_uuid TEXT NOT NULL,
+			skill_key TEXT NOT NULL,
+			domain_uuid TEXT,
+			PRIMARY KEY (user_uuid, skill_key)
+		)");
+		$db->exec("CREATE TABLE IF NOT EXISTS skykin_queue_skills (
+			call_center_queue_uuid TEXT PRIMARY KEY,
+			skill_key TEXT NOT NULL,
+			domain_uuid TEXT
+		)");
+	} else {
+		$db->exec("CREATE TABLE IF NOT EXISTS skykin_skills (
+			skill_key TEXT PRIMARY KEY,
+			label TEXT NOT NULL,
+			kind TEXT DEFAULT 'product',
+			sort_order INTEGER DEFAULT 0
+		)");
+		$db->exec("CREATE TABLE IF NOT EXISTS skykin_user_skills (
+			user_uuid UUID NOT NULL,
+			skill_key TEXT NOT NULL,
+			domain_uuid UUID,
+			PRIMARY KEY (user_uuid, skill_key)
+		)");
+		$db->exec("CREATE TABLE IF NOT EXISTS skykin_queue_skills (
+			call_center_queue_uuid UUID PRIMARY KEY,
+			skill_key TEXT NOT NULL,
+			domain_uuid UUID
+		)");
+	}
+	foreach (sc_ops_default_skills() as $sk) {
+		try {
+			$db->prepare(
+				"INSERT INTO skykin_skills (skill_key, label, kind, sort_order) VALUES (:k,:l,:n,:o)
+				 ON CONFLICT (skill_key) DO NOTHING"
+			)->execute([':k' => $sk['skill_key'], ':l' => $sk['label'], ':n' => $sk['kind'], ':o' => $sk['sort_order']]);
+		} catch (Throwable $e) {
+			try {
+				$db->prepare('INSERT OR IGNORE INTO skykin_skills (skill_key, label, kind, sort_order) VALUES (:k,:l,:n,:o)')
+					->execute([':k' => $sk['skill_key'], ':l' => $sk['label'], ':n' => $sk['kind'], ':o' => $sk['sort_order']]);
+			} catch (Throwable $e2) {
+				/* ignore */
+			}
+		}
+	}
+}
+
+function sc_ops_skill_catalog(PDO $db): array {
+	sc_ops_ensure_skill_tables($db);
+	try {
+		return $db->query('SELECT skill_key, label, kind, sort_order FROM skykin_skills ORDER BY sort_order, label')->fetchAll(PDO::FETCH_ASSOC) ?: [];
+	} catch (Throwable $e) {
+		return sc_ops_default_skills();
+	}
+}
+
+/** @return array<string,string[]> user_uuid => skill_keys */
+function sc_ops_load_user_skills(PDO $db, string $du): array {
+	sc_ops_ensure_skill_tables($db);
+	$out = [];
+	try {
+		$s = $db->prepare('SELECT user_uuid, skill_key FROM skykin_user_skills WHERE domain_uuid = :d OR domain_uuid IS NULL');
+		$s->execute([':d' => $du]);
+		foreach ($s->fetchAll(PDO::FETCH_ASSOC) as $r) {
+			$id = (string)$r['user_uuid'];
+			$out[$id][] = (string)$r['skill_key'];
+		}
+	} catch (Throwable $e) {
+		/* ignore */
+	}
+	return $out;
+}
+
+/** @return array<string,string> queue_uuid => skill_key */
+function sc_ops_load_queue_skills(PDO $db, string $du): array {
+	sc_ops_ensure_skill_tables($db);
+	$out = [];
+	try {
+		$s = $db->prepare('SELECT call_center_queue_uuid, skill_key FROM skykin_queue_skills WHERE domain_uuid = :d');
+		$s->execute([':d' => $du]);
+		foreach ($s->fetchAll(PDO::FETCH_ASSOC) as $r) {
+			$out[(string)$r['call_center_queue_uuid']] = (string)$r['skill_key'];
+		}
+	} catch (Throwable $e) {
+		/* ignore */
+	}
+	return $out;
+}
+
+function sc_ops_set_queue_skill(PDO $db, string $du, string $qid, string $skill): void {
+	sc_ops_ensure_skill_tables($db);
+	$skill = strtolower(trim($skill));
+	if ($qid === '') {
+		return;
+	}
+	if ($skill === '' || $skill === 'none') {
+		try {
+			$db->prepare('DELETE FROM skykin_queue_skills WHERE call_center_queue_uuid = :q')->execute([':q' => $qid]);
+		} catch (Throwable $e) {
+			/* ignore */
+		}
+		return;
+	}
+	try {
+		$db->prepare(
+			"INSERT INTO skykin_queue_skills (call_center_queue_uuid, skill_key, domain_uuid) VALUES (:q,:k,:d)
+			 ON CONFLICT (call_center_queue_uuid) DO UPDATE SET skill_key = EXCLUDED.skill_key, domain_uuid = EXCLUDED.domain_uuid"
+		)->execute([':q' => $qid, ':k' => $skill, ':d' => $du]);
+	} catch (Throwable $e) {
+		$db->prepare('DELETE FROM skykin_queue_skills WHERE call_center_queue_uuid = :q')->execute([':q' => $qid]);
+		$db->prepare('INSERT INTO skykin_queue_skills (call_center_queue_uuid, skill_key, domain_uuid) VALUES (:q,:k,:d)')
+			->execute([':q' => $qid, ':k' => $skill, ':d' => $du]);
+	}
+}
+
+/** @return array{members:int,skipped:array} */
+function sc_ops_set_queue_members(PDO $db, string $du, string $dom, string $qid, array $want): array {
+	$want = array_values(array_unique(array_filter(array_map('strval', $want))));
+	$users = [];
+	foreach (sc_ops_load_users($db, $du) as $u) {
+		$users[(string)$u['user_uuid']] = $u;
+	}
+	$qrow = $db->prepare(
+		'SELECT call_center_queue_uuid, queue_name FROM v_call_center_queues WHERE call_center_queue_uuid = :id AND domain_uuid = :d LIMIT 1'
+	);
+	$qrow->execute([':id' => $qid, ':d' => $du]);
+	$queue = $qrow->fetch(PDO::FETCH_ASSOC);
+	if (!$queue) {
+		return ['members' => 0, 'skipped' => ['queue']];
+	}
+	try {
+		$db->prepare('DELETE FROM v_call_center_tiers WHERE call_center_queue_uuid = :q AND domain_uuid = :d')
+			->execute([':q' => $qid, ':d' => $du]);
+	} catch (Throwable $e) {
+		$db->prepare('DELETE FROM v_call_center_tiers WHERE call_center_queue_uuid = :q')->execute([':q' => $qid]);
+	}
+	$pos = 1;
+	$added = 0;
+	$skipped = [];
+	foreach ($want as $uid) {
+		if (!isset($users[$uid])) {
+			$skipped[] = $uid;
+			continue;
+		}
+		$aid = sc_ops_ensure_cc_agent($db, $du, $dom, $users[$uid]);
+		if (!$aid) {
+			$skipped[] = (string)($users[$uid]['username'] ?? $uid) . ' (no extension)';
+			continue;
+		}
+		$tid = sc_ops_uuid();
+		$okTier = false;
+		try {
+			$db->prepare(
+				"INSERT INTO v_call_center_tiers (
+					call_center_tier_uuid, domain_uuid, call_center_queue_uuid, call_center_agent_uuid, tier_level, tier_position
+				) VALUES (:id, :d, :q, :a, 1, :p)"
+			)->execute([':id' => $tid, ':d' => $du, ':q' => $qid, ':a' => $aid, ':p' => $pos]);
+			$okTier = true;
+		} catch (Throwable $e) {
+			try {
+				$db->prepare(
+					"INSERT INTO v_call_center_tiers (
+						call_center_tier_uuid, domain_uuid, call_center_queue_uuid, call_center_agent_uuid,
+						tier_level, tier_position, queue_name, agent_name
+					) VALUES (:id, :d, :q, :a, 1, :p, :qn, :an)"
+				)->execute([
+					':id' => $tid,
+					':d' => $du,
+					':q' => $qid,
+					':a' => $aid,
+					':p' => $pos,
+					':qn' => (string)$queue['queue_name'],
+					':an' => (string)($users[$uid]['username'] ?? ''),
+				]);
+				$okTier = true;
+			} catch (Throwable $e2) {
+				$skipped[] = (string)($users[$uid]['username'] ?? $uid);
+			}
+		}
+		if ($okTier) {
+			$added++;
+			$pos++;
+		}
+	}
+	sc_ops_write_hunt_map($db);
+	return ['members' => $added, 'skipped' => $skipped];
+}
+
+function sc_ops_sync_skill_queues(PDO $db, string $du, string $dom): int {
+	$qskills = sc_ops_load_queue_skills($db, $du);
+	$uskills = sc_ops_load_user_skills($db, $du);
+	$n = 0;
+	foreach ($qskills as $qid => $skill) {
+		$want = [];
+		foreach ($uskills as $uid => $keys) {
+			if (in_array($skill, $keys, true)) {
+				$want[] = $uid;
+			}
+		}
+		sc_ops_set_queue_members($db, $du, $dom, $qid, $want);
+		$n++;
+	}
+	return $n;
 }
 
 function sc_ops_link_ext(PDO $db, string $du, string $userUuid, string $extUuid): void {
@@ -1440,8 +1781,11 @@ try {
 				$s->execute([':u' => $du]);
 				$queues = $s->fetchAll(PDO::FETCH_ASSOC);
 				$members = sc_ops_queue_members($db, $du);
+				$qskills = sc_ops_load_queue_skills($db, $du);
 				foreach ($queues as &$q) {
-					$q['member_uuids'] = $members[(string)($q['call_center_queue_uuid'] ?? '')] ?? [];
+					$qid = (string)($q['call_center_queue_uuid'] ?? '');
+					$q['member_uuids'] = $members[$qid] ?? [];
+					$q['required_skill'] = $qskills[$qid] ?? '';
 				}
 				unset($q);
 			} catch (Throwable $e) {
@@ -1510,6 +1854,7 @@ try {
 			'next_service_extension' => $nextServiceExt ?? '',
 			'roles' => $roles,
 			'permission_catalog' => $permCatalog,
+			'skills' => $du ? sc_ops_skill_catalog($db) : sc_ops_default_skills(),
 			'did_routes' => $didRoutes,
 			'notes' => $notes,
 			'settings' => [
@@ -1812,50 +2157,14 @@ try {
 				exit;
 			}
 			$ext = preg_replace('/\D+/', '', (string)($body['ivr_menu_extension'] ?? ''));
-			if ($ext === '') {
-				$ext = sc_ops_next_service_ext($db, $du, 9000);
-			}
-			$id = sc_ops_uuid();
-			$dp = sc_ops_uuid();
 			$greet = trim((string)($body['ivr_menu_greet_long'] ?? ''));
-			$xml = "<extension name=\"".sc_ops_esc_xml($name)."\" continue=\"false\" uuid=\"".sc_ops_esc_xml($dp)."\">\n"
-				."	<condition field=\"destination_number\" expression=\"^".sc_ops_esc_xml($ext)."\$\">\n"
-				."		<action application=\"answer\" data=\"\"/>\n"
-				."		<action application=\"sleep\" data=\"1000\"/>\n"
-				."		<action application=\"set\" data=\"ivr_menu_uuid=".sc_ops_esc_xml($id)."\"/>\n"
-				."		<action application=\"ivr\" data=\"".sc_ops_esc_xml($id)."\"/>\n"
-				."	</condition>\n"
-				."</extension>\n";
-			try {
-				sc_ops_put_dialplan($db, $du, $dom, $dp, $name, $ext, $xml, '101', 'a5788e9b-58bc-bd1b-df59-fff5d51253ab');
-			} catch (Throwable $e) {
-				$dp = '';
+			$made = sc_ops_ivr_create_menu($db, $du, $dom, $name, $ext, $greet, $desc);
+			$id = $made['ivr_menu_uuid'];
+			$ext = $made['ivr_menu_extension'];
+			$branches = $body['branches'] ?? [];
+			if (is_array($branches) && $branches) {
+				sc_ops_ivr_save_branches($db, $du, $dom, $id, $branches);
 			}
-			$db->prepare(
-				"INSERT INTO v_ivr_menus (
-					ivr_menu_uuid, domain_uuid, dialplan_uuid, ivr_menu_name, ivr_menu_extension,
-					ivr_menu_greet_long, ivr_menu_greet_short, ivr_menu_invalid_sound, ivr_menu_exit_sound,
-					ivr_menu_confirm_attempts, ivr_menu_timeout, ivr_menu_inter_digit_timeout,
-					ivr_menu_max_failures, ivr_menu_max_timeouts, ivr_menu_digit_len, ivr_menu_direct_dial,
-					ivr_menu_ringback, ivr_menu_context, ivr_menu_enabled, ivr_menu_description,
-					ivr_menu_language, ivr_menu_dialect, ivr_menu_voice
-				) VALUES (
-					:id, :d, :dp, :n, :e,
-					:gl, :gs, 'ivr/ivr-that_was_an_invalid_entry.wav', 'voicemail/vm-goodbye.wav',
-					1, 3000, 2000, 3, 3, 5, false,
-					'local_stream://default', :ctx, true, :ds, 'en', 'us', 'callie'
-				)"
-			)->execute([
-				':id' => $id,
-				':d' => $du,
-				':dp' => $dp !== '' ? $dp : null,
-				':n' => $name,
-				':e' => $ext,
-				':gl' => $greet,
-				':gs' => $greet,
-				':ctx' => $dom,
-				':ds' => $desc !== '' ? $desc : 'SkyConnect IVR',
-			]);
 			echo json_encode(['ok' => true, 'ivr_menu_uuid' => $id, 'ivr_menu_extension' => $ext, 'created' => true, 'reload' => sc_ops_reload_xml()]);
 			exit;
 		}
@@ -1895,21 +2204,19 @@ try {
 			echo json_encode(['ok' => false, 'error' => 'Digit and menu required']);
 			exit;
 		}
-		$opt = sc_ops_uuid();
-		$db->prepare(
-			"INSERT INTO v_ivr_menu_options (ivr_menu_option_uuid, ivr_menu_uuid, domain_uuid,
-				ivr_menu_option_digits, ivr_menu_option_action, ivr_menu_option_param, ivr_menu_option_description, ivr_menu_option_order)
-			 VALUES (:id, :m, :d, :dig, :a, :p, :ds, :ord)"
-		)->execute([
-			':id' => $opt,
-			':m' => $menu,
-			':d' => $du,
-			':dig' => $digits,
-			':a' => $action !== '' ? $action : 'menu-exec-app',
-			':p' => $param,
-			':ds' => $desc,
-			':ord' => (int)$digits,
-		]);
+		$subName = trim((string)($body['new_submenu'] ?? $body['submenu'] ?? ''));
+		if ($subName !== '') {
+			$child = sc_ops_ivr_create_menu($db, $du, $dom, $subName, '', '', $desc !== '' ? $desc : ('Submenu of ' . $subName));
+			$param = sc_ops_ivr_transfer_param($child['ivr_menu_extension']);
+			if ($desc === '') {
+				$desc = 'submenu ' . $subName;
+			}
+		}
+		if ($param === '') {
+			echo json_encode(['ok' => false, 'error' => 'Destination or new submenu required']);
+			exit;
+		}
+		$opt = sc_ops_ivr_add_option($db, $du, $menu, $digits, $param, $desc, $action);
 		echo json_encode(['ok' => true, 'ivr_menu_option_uuid' => $opt, 'reload' => sc_ops_reload_xml()]);
 		exit;
 	}
@@ -1986,6 +2293,11 @@ try {
 				':ctx' => $dom,
 				':ds' => 'SkyConnect queue',
 			]);
+			$skill = strtolower(trim((string)($body['required_skill'] ?? $body['skill'] ?? '')));
+			if ($skill !== '') {
+				sc_ops_set_queue_skill($db, $du, $id, $skill);
+				sc_ops_sync_skill_queues($db, $du, $dom);
+			}
 			echo json_encode(['ok' => true, 'call_center_queue_uuid' => $id, 'queue_extension' => $ext, 'created' => true]);
 			exit;
 		}
@@ -1996,6 +2308,10 @@ try {
 			     queue_moh_sound = :m
 			 WHERE call_center_queue_uuid = :id AND domain_uuid = :d"
 		)->execute([':n' => $name, ':s' => $strategy, ':m' => $moh, ':id' => $id, ':d' => $du]);
+		if (array_key_exists('required_skill', $body) || array_key_exists('skill', $body)) {
+			sc_ops_set_queue_skill($db, $du, $id, (string)($body['required_skill'] ?? $body['skill'] ?? ''));
+			sc_ops_sync_skill_queues($db, $du, $dom);
+		}
 		echo json_encode(['ok' => true]);
 		exit;
 	}
@@ -2233,67 +2549,54 @@ try {
 		if (!is_array($want)) {
 			$want = [];
 		}
-		$want = array_values(array_unique(array_filter(array_map('strval', $want))));
-		$users = [];
-		foreach (sc_ops_load_users($db, $du) as $u) {
-			$users[(string)$u['user_uuid']] = $u;
+		$pack = sc_ops_set_queue_members($db, $du, $dom, $qid, $want);
+		echo json_encode(['ok' => true, 'members' => $pack['members'], 'skipped' => $pack['skipped']]);
+		exit;
+	}
+
+	if ($op === 'skill_save' && ($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
+		sc_ops_need(['admin', 'superadmin']);
+		$du = sc_ops_domain_uuid($db, $dom);
+		if (!$du) {
+			echo json_encode(['ok' => false, 'error' => 'Domain not found']);
+			exit;
 		}
+		sc_ops_ensure_skill_tables($db);
+		$uid = trim((string)($body['user_uuid'] ?? ''));
+		if ($uid === '') {
+			echo json_encode(['ok' => false, 'error' => 'User required']);
+			exit;
+		}
+		$keys = $body['skills'] ?? [];
+		if (is_string($keys)) {
+			$keys = array_filter(array_map('trim', explode(',', $keys)));
+		}
+		if (!is_array($keys)) {
+			$keys = [];
+		}
+		$allowed = [];
+		foreach (sc_ops_skill_catalog($db) as $sk) {
+			$allowed[(string)$sk['skill_key']] = true;
+		}
+		$keys = array_values(array_unique(array_filter(array_map(static function ($k) use ($allowed) {
+			$k = strtolower(trim((string)$k));
+			return isset($allowed[$k]) ? $k : '';
+		}, $keys))));
 		try {
-			$db->prepare('DELETE FROM v_call_center_tiers WHERE call_center_queue_uuid = :q AND domain_uuid = :d')
-				->execute([':q' => $qid, ':d' => $du]);
+			$db->prepare('DELETE FROM skykin_user_skills WHERE user_uuid = :u AND domain_uuid = :d')->execute([':u' => $uid, ':d' => $du]);
 		} catch (Throwable $e) {
-			$db->prepare('DELETE FROM v_call_center_tiers WHERE call_center_queue_uuid = :q')->execute([':q' => $qid]);
+			$db->prepare('DELETE FROM skykin_user_skills WHERE user_uuid = :u')->execute([':u' => $uid]);
 		}
-		$pos = 1;
-		$added = 0;
-		$skipped = [];
-		foreach ($want as $uid) {
-			if (!isset($users[$uid])) {
-				$skipped[] = $uid;
-				continue;
-			}
-			$aid = sc_ops_ensure_cc_agent($db, $du, $dom, $users[$uid]);
-			if (!$aid) {
-				$skipped[] = (string)($users[$uid]['username'] ?? $uid) . ' (no extension)';
-				continue;
-			}
-			$tid = sc_ops_uuid();
-			$okTier = false;
+		$ins = $db->prepare('INSERT INTO skykin_user_skills (user_uuid, skill_key, domain_uuid) VALUES (:u,:k,:d)');
+		foreach ($keys as $k) {
 			try {
-				$db->prepare(
-					"INSERT INTO v_call_center_tiers (
-						call_center_tier_uuid, domain_uuid, call_center_queue_uuid, call_center_agent_uuid, tier_level, tier_position
-					) VALUES (:id, :d, :q, :a, 1, :p)"
-				)->execute([':id' => $tid, ':d' => $du, ':q' => $qid, ':a' => $aid, ':p' => $pos]);
-				$okTier = true;
+				$ins->execute([':u' => $uid, ':k' => $k, ':d' => $du]);
 			} catch (Throwable $e) {
-				try {
-					$db->prepare(
-						"INSERT INTO v_call_center_tiers (
-							call_center_tier_uuid, domain_uuid, call_center_queue_uuid, call_center_agent_uuid,
-							tier_level, tier_position, queue_name, agent_name
-						) VALUES (:id, :d, :q, :a, 1, :p, :qn, :an)"
-					)->execute([
-						':id' => $tid,
-						':d' => $du,
-						':q' => $qid,
-						':a' => $aid,
-						':p' => $pos,
-						':qn' => (string)$queue['queue_name'],
-						':an' => (string)($users[$uid]['username'] ?? ''),
-					]);
-					$okTier = true;
-				} catch (Throwable $e2) {
-					$skipped[] = (string)($users[$uid]['username'] ?? $uid);
-				}
-			}
-			if ($okTier) {
-				$added++;
-				$pos++;
+				/* ignore dup */
 			}
 		}
-		sc_ops_write_hunt_map($db);
-		echo json_encode(['ok' => true, 'members' => $added, 'skipped' => $skipped]);
+		$synced = sc_ops_sync_skill_queues($db, $du, $dom);
+		echo json_encode(['ok' => true, 'skills' => $keys, 'queues_synced' => $synced, 'reload' => sc_ops_reload_xml()]);
 		exit;
 	}
 
@@ -2557,6 +2860,12 @@ try {
 			'session_idle_minutes' => skykin_idle_timeout_minutes(),
 			'biz_hours' => sc_ops_biz_hours_get($dom),
 		]);
+		exit;
+	}
+
+	if ($op === 'ai_health') {
+		require_once __DIR__ . '/skykin_ai.php';
+		echo json_encode(skykin_ai_health());
 		exit;
 	}
 

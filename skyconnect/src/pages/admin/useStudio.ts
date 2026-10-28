@@ -10,6 +10,7 @@ export type StudioUser = {
   groups?: string;
   group_list?: string[];
   extension?: string;
+  skills?: string[];
 };
 
 export type Studio = {
@@ -33,6 +34,7 @@ export type Studio = {
     permissions: string[];
   }[];
   permission_catalog?: { application_name: string; permission_name: string }[];
+  skills?: { skill_key: string; label: string; kind?: string; sort_order?: number }[];
   did_routes?: { route_id?: number; did?: string; dest_ext?: string; dest_kind?: string }[];
   notes?: string[];
   settings?: {

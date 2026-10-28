@@ -329,19 +329,9 @@
 
 				// SkyKin: role-based landing after login
 				if (!empty($_SESSION['groups'])) {
-					$skykin_domain = $_SESSION['user_context'] ?? ($_SESSION['domain_name'] ?? 'client1.skykin.local');
-					$skykin_user   = $_SESSION['username'] ?? ($_SESSION['user']['username'] ?? 'agent');
-					foreach ($_SESSION['groups'] as $g) {
-						$name = strtolower((string)($g['group_name'] ?? ''));
-						if ($name === 'agent') {
-							header('Location: /app/agent_dashboard/index.php?agent=' . rawurlencode($skykin_user) . '&domain=' . rawurlencode($skykin_domain));
-							exit;
-						}
-						if ($name === 'supervisor') {
-							header('Location: /app/agent_dashboard/supervisor.php?domain=' . rawurlencode($skykin_domain));
-							exit;
-						}
-					}
+					$land = '/app/agent_dashboard/skyconnect_land.php';
+					header('Location: ' . $land);
+					exit;
 				}
 
 				if (!empty($settings->get('login', 'destination', ''))) {

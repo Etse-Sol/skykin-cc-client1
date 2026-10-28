@@ -163,6 +163,36 @@ function skykin_ai_ready(): bool {
     return true;
 }
 
+/** Probe /health on each candidate base (PHP in Docker cannot use host 127.0.0.1). */
+function skykin_ai_health(): array {
+    $tried = [];
+    foreach (skykin_ai_candidate_bases() as $base) {
+        $url = rtrim($base, '/') . '/health';
+        $res = skykin_ai_http('GET', $url, skykin_ai_auth_headers(), null, 4);
+        $row = [
+            'url' => $url,
+            'ok' => !empty($res['ok']),
+            'http' => (int)($res['http'] ?? 0),
+            'error' => (string)($res['error'] ?? ''),
+        ];
+        $tried[] = $row;
+        if (!empty($res['ok'])) {
+            $j = json_decode((string)($res['body'] ?? ''), true);
+            return [
+                'ok' => true,
+                'base' => $base,
+                'health' => is_array($j) ? $j : ['raw' => $res['body'] ?? ''],
+                'tried' => $tried,
+            ];
+        }
+    }
+    return [
+        'ok' => false,
+        'error' => 'SkyKin AI is not reachable. Bind it on 0.0.0.0:8100 on the host (not 127.0.0.1).',
+        'tried' => $tried,
+    ];
+}
+
 /** @return array{ok:bool,error?:string,body?:string,http?:int} */
 function skykin_ai_http(string $method, string $url, array $headers, $body, int $timeout = 120): array {
     if (!function_exists('curl_init')) {
@@ -177,9 +207,12 @@ function skykin_ai_http(string $method, string $url, array $headers, $body, int 
         CURLOPT_CUSTOMREQUEST => $method,
         CURLOPT_RETURNTRANSFER => true,
         CURLOPT_TIMEOUT => $timeout,
+        CURLOPT_CONNECTTIMEOUT => min(3, max(1, $timeout)),
         CURLOPT_HTTPHEADER => $hdrs,
-        CURLOPT_POSTFIELDS => $body,
     ]);
+    if ($body !== null && $body !== false) {
+        curl_setopt($ch, CURLOPT_POSTFIELDS, $body);
+    }
     $raw = curl_exec($ch);
     $err = curl_error($ch);
     $code = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
@@ -309,55 +342,62 @@ function skykin_ai_transcribe(string $absolutePath, ?string $language = null, ?i
         $lang2 = substr($lang, 0, 2);
     }
     $last = 'transcribe failed';
+    $sawOk = false;
+    $asrPost = static function () use ($absolutePath): array {
+        return [
+            'audio_file' => skykin_ai_curl_file($absolutePath),
+            'file' => skykin_ai_curl_file($absolutePath),
+        ];
+    };
+    $openaiPost = static function () use ($absolutePath, $c, $lang2): array {
+        $p = [
+            'file' => skykin_ai_curl_file($absolutePath),
+            'model' => $c['whisper_model'],
+            'response_format' => 'json',
+        ];
+        if ($lang2 !== '') {
+            $p['language'] = $lang2;
+        }
+        return $p;
+    };
     foreach (skykin_ai_candidate_bases() as $base) {
         $root = rtrim($base, '/');
-        $asrQs = '/asr?task=transcribe&output=json&encode=true';
+        $asrQs = '/asr?task=transcribe&output=json';
         if ($lang2 !== '') {
             $asrQs .= '&language=' . rawurlencode($lang2);
         }
         $tries = [
-            [
-                $root . $asrQs,
-                static function () use ($absolutePath): array {
-                    return ['audio_file' => skykin_ai_curl_file($absolutePath)];
-                },
-            ],
-            [
-                $root . '/asr',
-                static function () use ($absolutePath, $lang2): array {
-                    $p = ['audio_file' => skykin_ai_curl_file($absolutePath)];
-                    if ($lang2 !== '') {
-                        $p['language'] = $lang2;
-                    }
-                    return $p;
-                },
-            ],
-            [
-                $root . $c['transcribe_path'],
-                static function () use ($absolutePath, $c, $lang2): array {
-                    $p = [
-                        'file' => skykin_ai_curl_file($absolutePath),
-                        'model' => $c['whisper_model'],
-                        'response_format' => 'json',
-                    ];
-                    if ($lang2 !== '') {
-                        $p['language'] = $lang2;
-                    }
-                    return $p;
-                },
-            ],
+            [$root . $asrQs, $asrPost],
+            [$root . '/asr', $asrPost],
+            [$root . '/v1/transcribe', $asrPost],
+            [$root . $c['transcribe_path'], $openaiPost],
         ];
         foreach ($tries as [$url, $makePost]) {
             $res = skykin_ai_http('POST', $url, skykin_ai_auth_headers(), $makePost(), $wait);
+            $http = (int)($res['http'] ?? 0);
             if (empty($res['ok'])) {
+                // FastAPI skykin-web 404 on /v1/audio/transcriptions must not hide a good /asr.
+                if ($http === 404) {
+                    continue;
+                }
                 $last = (string)($res['error'] ?? 'transcribe failed');
                 continue;
             }
+            $sawOk = true;
             $raw = trim((string)($res['body'] ?? ''));
             $j = json_decode($raw, true);
             $text = '';
             if (is_array($j)) {
                 $text = trim((string)($j['text'] ?? $j['transcript'] ?? $j['transcription'] ?? ''));
+                if ($text === '' && !empty($j['segments']) && is_array($j['segments'])) {
+                    $bits = [];
+                    foreach ($j['segments'] as $seg) {
+                        if (is_array($seg)) {
+                            $bits[] = trim((string)($seg['text'] ?? ''));
+                        }
+                    }
+                    $text = trim(implode(' ', $bits));
+                }
             } elseif ($raw !== '' && $raw[0] !== '{') {
                 $text = $raw;
             }
@@ -365,7 +405,12 @@ function skykin_ai_transcribe(string $absolutePath, ?string $language = null, ?i
                 return ['ok' => true, 'text' => $text];
             }
             $last = 'Empty transcript';
+            // This URL is the live STT service; do not fall through to a 404 path.
+            return ['ok' => true, 'text' => ''];
         }
+    }
+    if ($sawOk) {
+        return ['ok' => true, 'text' => ''];
     }
     return ['ok' => false, 'error' => $last];
 }

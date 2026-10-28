@@ -32,6 +32,15 @@
 		session_start();
 	}
 
+// SkyKin: nginx forwards Authorization as HTTP_AUTHORIZATION; PHP_AUTH_* stays empty otherwise.
+	if (empty($_SERVER['PHP_AUTH_USER']) && !empty($_SERVER['HTTP_AUTHORIZATION'])
+		&& preg_match('/Basic\s+(.*)$/i', $_SERVER['HTTP_AUTHORIZATION'], $m)) {
+		$decoded = base64_decode($m[1]);
+		if ($decoded !== false && strpos($decoded, ':') !== false) {
+			list($_SERVER['PHP_AUTH_USER'], $_SERVER['PHP_AUTH_PW']) = explode(':', $decoded, 2);
+		}
+	}
+
 //check the domain cidr range 
 	if (isset($_SESSION['cdr']["cidr"]) && !defined('STDIN')) {
 		$found = false;

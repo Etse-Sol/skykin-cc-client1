@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """WSS/WS SIP <-> UDP SIP gateway.
 
-Browsers keep using nginx /wss/. FreeSWITCH sees a normal UDP registration
-on 127.0.0.1, so callee INVITEs no longer try a new WebSocket to nginx (503).
+Browsers keep using nginx /wss/. FreeSWITCH sees a normal UDP registration,
+so callee INVITEs no longer try a new WebSocket to nginx (503).
 """
 from __future__ import annotations
 
@@ -28,6 +28,7 @@ LISTEN_PORT = int(os.environ.get("SKYKIN_WS_SIP_PORT", "18081"))
 
 log = logging.getLogger("skykin-ws-sip")
 VIA_BRANCH_RE = re.compile(r"branch=([^;]+)", re.I)
+SIP_URI_RE = re.compile(r"sip:[^\s;>]+", re.I)
 
 
 def parse_sip(raw: str):
@@ -53,11 +54,52 @@ def header_val(h: str) -> str:
     return h.split(":", 1)[1].strip() if ":" in h else ""
 
 
+def cseq_method(headers: list[str]) -> str:
+    for h in headers:
+        if header_name(h) == "cseq":
+            parts = header_val(h).split()
+            return parts[-1].upper() if parts else ""
+    return ""
+
+
 def _rewrite_contact(val: str, agent: "Agent") -> str:
     val = re.sub(r"@[^;>;\s]+", f"@{agent.host}:{agent.port}", val, count=1)
     val = re.sub(r"transport=wss", "transport=udp", val, flags=re.I)
     val = re.sub(r"transport=ws", "transport=udp", val, flags=re.I)
+    if "transport=" not in val.lower():
+        if val.endswith(">"):
+            val = val[:-1] + ";transport=udp>"
+        else:
+            val = val + ";transport=udp"
     return val
+
+
+def _contact_uri(val: str) -> str:
+    m = SIP_URI_RE.search(val or "")
+    return m.group(0) if m else ""
+
+
+def _dialog_contact_for_browser(fs_contact: str, agent: "Agent") -> str:
+    """Present FS dialog Contact to Chrome as WSS on this agent's UDP mapping."""
+    uri = _contact_uri(fs_contact)
+    if not uri:
+        return fs_contact
+    user = uri[4:].split("@", 1)[0]
+    return f"<sip:{user}@{agent.host}:{agent.port};transport=wss>"
+
+
+def rewrite_start_to_fs(start: str, agent: "Agent") -> str:
+    """ACK/BYE often target *.invalid;transport=wss — map back to FS dialog Contact."""
+    if start.startswith("SIP/2.0 "):
+        return start
+    if ".invalid" not in start and "transport=wss" not in start.lower():
+        return start
+    target = agent.dialog_fs_contact or ""
+    uri = _contact_uri(target)
+    if not uri:
+        uri = f"sip:{agent.host}:{agent.port}"
+    uri = uri.split(";")[0] + ";transport=udp"
+    return re.sub(r"sip:\S+", uri, start, count=1)
 
 
 def rewrite_to_fs(start: str, headers: list[str], agent: "Agent") -> list[str]:
@@ -118,7 +160,10 @@ def webrtc_fix_sdp(body: str) -> str:
 
 
 def rewrite_start_to_ws(start: str, agent: "Agent") -> str:
-    if start.startswith("INVITE ") and agent.last_contact:
+    # INVITE/BYE/etc from FS use UDP Contact — point at browser WSS identity.
+    if start.startswith("SIP/2.0 "):
+        return start
+    if agent.last_contact:
         m = re.search(r"sip:([^@>\s]+@[^;>\s]+)", agent.last_contact)
         if m:
             uri = m.group(1).split(";")[0] + ";transport=wss"
@@ -128,6 +173,7 @@ def rewrite_start_to_ws(start: str, agent: "Agent") -> str:
 
 def rewrite_to_ws(start: str, headers: list[str], agent: "Agent") -> list[str]:
     is_response = start.startswith("SIP/2.0 ")
+    method = cseq_method(headers)
     if start.startswith("INVITE"):
         for h in headers:
             if header_name(h) == "via":
@@ -145,9 +191,16 @@ def rewrite_to_ws(start: str, headers: list[str], agent: "Agent") -> list[str]:
                 val = header_val(h).replace("SIP/2.0/UDP", "SIP/2.0/WSS")
                 out.append(f"Via: {val}")
             continue
-        if name == "contact" and is_response and agent.last_contact:
-            out.append(f"Contact: {agent.last_contact}")
-            continue
+        if name == "contact" and is_response:
+            # REGISTER 200: echo the browser Contact.
+            # INVITE 200/183: keep FS dialog Contact (mapped to WSS) so ACK/BYE work.
+            if method == "REGISTER" and agent.last_contact:
+                out.append(f"Contact: {agent.last_contact}")
+                continue
+            if method in ("INVITE", "UPDATE", "SUBSCRIBE"):
+                agent.dialog_fs_contact = header_val(h)
+                out.append(f"Contact: {_dialog_contact_for_browser(header_val(h), agent)}")
+                continue
         out.append(h)
     return out
 
@@ -165,6 +218,7 @@ class Agent:
         self.last_via = None
         self.last_contact = None
         self.pending_fs_via = None
+        self.dialog_fs_contact = None
 
     def close(self):
         try:
@@ -206,7 +260,8 @@ async def udp_reader(agent: Agent):
         log.exception("udp_reader")
 
 
-async def ws_handler(ws):
+async def ws_handler(ws, path=None):
+    # websockets 10.x (Debian) passes (websocket, path); 13+ only websocket.
     agent = Agent(ws)
     agents.add(agent)
     log.info("WS up udp=%s:%s peer=%s", agent.host, agent.port, ws.remote_address)
@@ -216,6 +271,7 @@ async def ws_handler(ws):
             if isinstance(message, bytes):
                 message = message.decode("utf-8", "replace")
             start, headers, body = parse_sip(message)
+            start = rewrite_start_to_fs(start, agent)
             if body.startswith("v=0"):
                 body = webrtc_fix_sdp(body)
             out = serialize(start, rewrite_to_fs(start, headers, agent), body)

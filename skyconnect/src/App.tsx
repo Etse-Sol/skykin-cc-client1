@@ -18,6 +18,7 @@ import Reports from './pages/supervisor/Reports';
 import Wallboard from './pages/supervisor/Wallboard';
 import WfmSchedule from './pages/supervisor/WfmSchedule';
 import Quality from './pages/supervisor/Quality';
+import Evaluation from './pages/supervisor/Evaluation';
 import SupLearning from './pages/supervisor/Learning';
 import Surveys from './pages/supervisor/Surveys';
 import TeamRealtime from './pages/supervisor/Team';
@@ -25,6 +26,8 @@ import AiLiveFloor from './pages/supervisor/Floor';
 import AdminConsole from './pages/admin/Console';
 import AdminFlows from './pages/admin/Flows';
 import AdminUsers from './pages/admin/Users';
+import AdminRoles from './pages/admin/Roles';
+import AdminSkills from './pages/admin/Skills';
 import { CallReasonsReport, IvrReport } from './pages/admin/Reports';
 import {
   AdminAnnouncements,
@@ -65,6 +68,7 @@ export default function App() {
         <Route path="wallboard" element={<Wallboard />} />
         <Route path="schedule" element={<WfmSchedule />} />
         <Route path="quality" element={<Quality />} />
+        <Route path="evaluation" element={<Evaluation />} />
         <Route path="learning" element={<SupLearning />} />
         <Route path="surveys" element={<Surveys />} />
       </Route>
@@ -79,6 +83,8 @@ export default function App() {
         <Route path="verification" element={<AdminVerification />} />
         <Route path="knowledge" element={<AdminKnowledge />} />
         <Route path="users" element={<AdminUsers />} />
+        <Route path="roles" element={<AdminRoles />} />
+        <Route path="skills" element={<AdminSkills />} />
         <Route path="settings" element={<AdminSettings />} />
         <Route path="reports/ivr" element={<IvrReport />} />
         <Route path="reports/reasons" element={<CallReasonsReport />} />

@@ -102,6 +102,42 @@ export function statusLabel(a: SupAgent): string {
   return a.status || '—';
 }
 
+export function isLoggedIn(a: SupAgent): boolean {
+  const st = (a.status || '').toLowerCase();
+  return !!a.registered && st !== 'offline' && st !== 'logged_out';
+}
+
+export function isReady(a: SupAgent): boolean {
+  const st = (a.status || '').toLowerCase();
+  return isLoggedIn(a) && (st === 'ready' || st === 'available');
+}
+
+export function isOnCall(a: SupAgent): boolean {
+  const st = (a.status || '').toLowerCase();
+  return (a.call_duration || 0) > 0 || !!a.on_call_with || st === 'incall' || st === 'on_call' || st.includes('call');
+}
+
+export function isOnBreak(a: SupAgent): boolean {
+  return (a.status || '').toLowerCase() === 'break';
+}
+
+export function floorSnapshot(agents: SupAgent[]) {
+  const online = agents.filter(isLoggedIn);
+  const ready = agents.filter(isReady);
+  const onCall = agents.filter(isOnCall);
+  const onBreak = agents.filter(isOnBreak);
+  return {
+    total: agents.length,
+    online: online.length,
+    ready: ready.length,
+    onCall: onCall.length,
+    onBreak: onBreak.length,
+    offline: Math.max(0, agents.length - online.length),
+    onlineAgents: online,
+    readyAgents: ready,
+  };
+}
+
 export function initials(name: string): string {
   const p = (name || '').trim().split(/\s+/).filter(Boolean);
   if (p.length >= 2) return (p[0][0] + p[1][0]).toUpperCase();
@@ -129,6 +165,18 @@ export type LeaveRequest = {
   status?: string;
   requested_at?: string;
 };
+
+export async function fetchRecordingsAll(
+  domain: string,
+  from: string,
+  to: string,
+): Promise<any[]> {
+  const q = new URLSearchParams({ action: 'recordings_all', domain, from, to });
+  const r = await fetch(`${SUP}?${q}`, { credentials: 'same-origin', cache: 'no-store' });
+  if (!r.ok) throw new Error(`recordings ${r.status}`);
+  const data = await r.json();
+  return Array.isArray(data?.rows) ? data.rows : [];
+}
 
 export async function fetchCallHistoryAll(
   domain: string,

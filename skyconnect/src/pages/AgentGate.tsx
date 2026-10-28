@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Navigate } from 'react-router-dom';
 import { goPbxIfSuperadmin, homeFor, sessionRole } from '../lib/role';
-import { fetchAgentSession, type AgentSession } from '../services/session';
+import { demoSession, fetchAgentSession, setCachedSession, SIGNIN, type AgentSession } from '../services/session';
 
 export default function AgentGate() {
   const [session, setSession] = useState<AgentSession | null>(null);
@@ -10,7 +10,7 @@ export default function AgentGate() {
   useEffect(() => {
     const q = new URLSearchParams(window.location.search).get('path') || '';
     if (import.meta.env.DEV && q.includes('agent_dashboard')) {
-      window.location.replace('/app/agent_dashboard/skyconnect_signin.php');
+      window.location.replace(SIGNIN);
       return;
     }
     fetchAgentSession()
@@ -21,10 +21,23 @@ export default function AgentGate() {
   if (err) {
     return (
       <div className="flex min-h-screen flex-col items-center justify-center gap-3 bg-[#e8efe6] p-6">
-        <p className="text-[var(--color-sc-forest)]">{err}</p>
-        <a className="text-sm font-bold text-[var(--color-sc-green)] underline" href="/">
+        <p className="max-w-md text-center text-[var(--color-sc-forest)]">{err}</p>
+        <a className="text-sm font-bold text-[var(--color-sc-green)] underline" href={SIGNIN}>
           Go to sign in
         </a>
+        {import.meta.env.DEV ? (
+          <button
+            type="button"
+            className="sc-btn"
+            onClick={() => {
+              setCachedSession(demoSession());
+              setSession(demoSession());
+              setErr('');
+            }}
+          >
+            Continue locally (admin UI)
+          </button>
+        ) : null}
       </div>
     );
   }

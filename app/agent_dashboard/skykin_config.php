@@ -720,14 +720,21 @@ function skykin_learn_recommend_from_eval(PDO $db, string $dom, string $ext, str
 	}
 	foreach (skykin_learn_skills() as $key => $label) {
 		$v = (int)($scores[$key] ?? $scores['score_' . $key] ?? 0);
-		if ($v < 1 || $v >= 4) {
+		if ($v >= 4) {
 			continue;
 		}
-		$find = $db->prepare("SELECT course_id FROM skykin_learn_courses WHERE skill_key=:k AND (domain_name=:d OR domain_name='' OR domain_name IS NULL) ORDER BY course_id DESC LIMIT 1");
+		$find = $db->prepare("SELECT course_id, title FROM skykin_learn_courses WHERE skill_key=:k AND (domain_name=:d OR domain_name='' OR domain_name IS NULL) ORDER BY course_id DESC LIMIT 1");
 		$find->execute([':k' => $key, ':d' => $dom]);
-		$id = (int)$find->fetchColumn();
+		$course = $find->fetch(PDO::FETCH_ASSOC);
+		$id = (int)($course['course_id'] ?? 0);
 		if ($id > 0 && skykin_learn_assign_one($db, $dom, $ext, $name, $id, 'evaluation')) {
-			$assigned[] = ['skill' => $label, 'course_id' => $id];
+			$assigned[] = [
+				'skill' => $label,
+				'skill_key' => $key,
+				'course_id' => $id,
+				'title' => (string)($course['title'] ?? $label),
+				'score' => $v,
+			];
 		}
 	}
 	return $assigned;
@@ -2200,8 +2207,15 @@ function skykin_cdr_period_metrics(array $rows): array {
 	$local = 0;
 	$talkSum = 0;
 	$talkCnt = 0;
+	$waitSum = 0;
+	$waitCnt = 0;
 	foreach ($rows as $r) {
 		$b = (int)($r['billsec'] ?? 0);
+		$wait = (int)($r['waitsec'] ?? 0);
+		if ($wait > 0) {
+			$waitSum += $wait;
+			$waitCnt++;
+		}
 		$dir = strtolower(trim((string)($r['direction'] ?? '')));
 		if ($dir === 'inbound') {
 			$inbound++;
@@ -2241,6 +2255,8 @@ function skykin_cdr_period_metrics(array $rows): array {
 		'total_talk' => $talkSum,
 		'avg_dur' => $talkCnt > 0 ? (int)round($talkSum / $talkCnt) : 0,
 		'avg_talk' => $talkCnt > 0 ? (int)round($talkSum / $talkCnt) : 0,
+		'avg_wait' => $waitCnt > 0 ? (int)round($waitSum / $waitCnt) : 0,
+		'sla' => $inbound > 0 ? round(($inbound - $unhandled) / $inbound * 100, 1) : 0,
 		'abandon_rate' => $inbound > 0 ? round($unhandled / $inbound * 100, 1) : 0,
 	];
 }

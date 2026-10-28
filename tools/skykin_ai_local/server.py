@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-from fastapi import FastAPI, File, Form, UploadFile
+from fastapi import FastAPI, File, Form, Query, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -184,12 +184,51 @@ def _extract_json_obj(text: str) -> dict[str, Any]:
             return {}
 
 
+def _pull_notes(data: dict[str, Any]) -> str:
+    for k in ("notes", "evaluator_notes", "comment", "comments", "feedback", "summary", "rationale"):
+        v = data.get(k)
+        if isinstance(v, list):
+            v = " ".join(str(x) for x in v)
+        v = str(v or "").strip()
+        if v:
+            return v
+    return ""
+
+
+def _coach_notes(transcript: str, scores: dict[str, int]) -> str:
+    t = re.sub(r"\s+", " ", (transcript or "").strip())
+    excerpt = (t[:280] + "…") if len(t) > 280 else t
+    parts = [f"{k} {int(scores.get(k, 0))}/5" for k in SCORE_KEYS]
+    lines = ["Coach notes: " + ", ".join(parts) + "."]
+    if not t:
+        lines.append(
+            "The recording did not yield a usable transcript, so scores are conservative. "
+            "Re-run with a clearer clip."
+        )
+    else:
+        lines.append("Evidence from the call: " + excerpt)
+        weak = [k for k in SCORE_KEYS if int(scores.get(k, 3)) <= 2]
+        if weak:
+            lines.append("Needs work: " + ", ".join(weak) + ".")
+        else:
+            lines.append(
+                "The agent met the basic QA bar; still check greeting, procedure, and closing against the script."
+            )
+    return " ".join(lines)
+
+
 def score_with_gemini(transcript: str, meta: dict) -> dict[str, Any] | None:
     key = GEMINI_API_KEY
     if not key:
         return None
     models = [GEMINI_MODEL]
-    for m in ("gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-2.5-flash"):
+    for m in (
+        "gemini-3.8-flash",
+        "gemini-3.5-flash",
+        "gemini-3.1-flash-lite",
+        "gemini-2.0-flash",
+        "gemini-2.5-flash",
+    ):
         if m not in models:
             models.append(m)
     prompt = (
@@ -231,9 +270,11 @@ def score_with_gemini(transcript: str, meta: dict) -> dict[str, Any] | None:
             if not data:
                 last_err = "empty/invalid JSON"
                 continue
+            scores = clamp_scores(data)
+            notes = _pull_notes(data) or _coach_notes(transcript, scores)
             return {
-                "scores": clamp_scores(data),
-                "notes": str(data.get("notes", "")).strip() or "Scored via Gemini",
+                "scores": scores,
+                "notes": notes,
                 "provider": f"gemini:{model}",
             }
         except Exception as e:
@@ -297,10 +338,14 @@ def score_with_ollama(transcript: str, meta: dict) -> dict[str, Any] | None:
                 last_err = f"HTTP {r.status_code}"
                 continue
             content = (r.json().get("message") or {}).get("content") or ""
-            data = json.loads(content)
+            data = json.loads(content) if content else {}
+            if not isinstance(data, dict):
+                data = {}
+            scores = clamp_scores(data)
+            notes = _pull_notes(data) or _coach_notes(transcript, scores)
             return {
-                "scores": clamp_scores(data if isinstance(data, dict) else {}),
-                "notes": str(data.get("notes", "")).strip() or "Scored via Ollama",
+                "scores": scores,
+                "notes": notes,
                 "provider": f"ollama:{model}",
             }
         except Exception as e:
@@ -327,6 +372,7 @@ def score_heuristic(transcript: str) -> dict[str, Any]:
     if re.search(r"(ሰላም|እንደምን|hello|hi\b|good\s*(morning|afternoon))", t, re.I):
         bump = 1
     scores = {k: max(1, min(5, base + (bump if k in ("greeting", "tone") else 0))) for k in SCORE_KEYS}
+    notes = (notes + " " + _coach_notes(transcript, scores)).strip()
     return {"scores": scores, "notes": notes, "provider": "heuristic"}
 
 
@@ -484,6 +530,65 @@ def get_job(job_id: str):
     return {"ok": True, **job}
 
 
+async def _transcribe_upload(
+    audio_file: UploadFile | None = File(None),
+    file: UploadFile | None = File(None),
+):
+    """Whisper-asr + OpenAI-compat live captions. Same Amharic ASR as evaluation."""
+    up = audio_file or file
+    if up is None:
+        return JSONResponse({"ok": False, "error": "No audio file", "detail": "No audio file"}, status_code=400)
+    raw = await up.read()
+    if len(raw) < 400:
+        return {"ok": True, "text": "", "transcript": ""}
+    suffix = Path(up.filename or "live.webm").suffix or ".webm"
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        tmp.write(raw)
+        tmp_path = tmp.name
+    try:
+        transcript, asr_provider = transcribe_amharic(tmp_path)
+        return {
+            "ok": True,
+            "text": transcript,
+            "transcript": transcript,
+            "provider": asr_provider,
+        }
+    except RuntimeError as e:
+        msg = str(e)
+        if "Empty transcript" in msg:
+            return {"ok": True, "text": "", "transcript": ""}
+        return JSONResponse({"ok": False, "error": msg}, status_code=500)
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+
+
+@app.post("/asr")
+async def asr_compat(
+    audio_file: UploadFile | None = File(None),
+    file: UploadFile | None = File(None),
+    task: str = Query("transcribe"),
+    language: str | None = Query(None),
+    output: str = Query("json"),
+    encode: bool = Query(True),
+):
+    del task, language, output, encode
+    return await _transcribe_upload(audio_file=audio_file, file=file)
+
+
+@app.post("/v1/transcribe")
+@app.post("/v1/audio/transcriptions")
+async def openai_transcribe(
+    audio_file: UploadFile | None = File(None),
+    file: UploadFile | None = File(None),
+):
+    return await _transcribe_upload(audio_file=audio_file, file=file)
+
+
 @app.post("/v1/evaluate")
 async def evaluate(
     file: UploadFile = File(...),
@@ -547,4 +652,6 @@ app.mount("/static", StaticFiles(directory=str(STATIC)), name="static")
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run("server:app", host="127.0.0.1", port=8100, reload=False)
+    host = os.getenv("SKYKIN_AI_HOST", "0.0.0.0")
+    port = int(os.getenv("SKYKIN_AI_PORT", "8100"))
+    uvicorn.run("server:app", host=host, port=port, reload=False)

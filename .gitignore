@@ -17,3 +17,5 @@ app/agent_dashboard/skykin_local.db
 .env
 .env.docker
 _tmp_*.py
+_PASTE_PRO_*.sh
+_pack_pro/

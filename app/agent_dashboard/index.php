@@ -1569,6 +1569,25 @@ if (isset($_GET['action']) && $_GET['action'] === 'outbound_live') {
             }
         }
     }
+    // Local extension (101/102): dest is 2–6 digits — match B-leg by presence/name.
+    if (!$blegLive && $dest !== '' && strlen($dest) >= 2 && strlen($dest) <= 6) {
+        foreach ($rows as $row) {
+            if (!is_array($row) || !$isLiveRow($row) || $isAgentRow($row)) {
+                continue;
+            }
+            $name = strtolower((string)($row['name'] ?? ''));
+            $presence = strtolower((string)($row['presence_id'] ?? ''));
+            $cid = preg_replace('/\D+/', '', (string)($row['cid_num'] ?? $row['cid_number'] ?? ''));
+            $callee = preg_replace('/\D+/', '', (string)($row['callee_num'] ?? $row['dest'] ?? ''));
+            if (preg_match('#(^|[/@])' . preg_quote($dest, '#') . '(@|$|-)#', $name)
+                || strpos($presence, $dest . '@') !== false
+                || $cid === $dest
+                || $callee === $dest) {
+                $markBleg($row);
+                break;
+            }
+        }
+    }
     // When B-leg is gone, surface FS hangup cause so the agent UI can show Busy / Switched off / etc.
     $hangupCause = '';
     if ($agentUuid !== '' && !$blegLive) {
@@ -1954,6 +1973,12 @@ if (!empty($agent_ext) && isset($pdb)) {
         $sq->execute([':pat' => '%/' . $agent_ext . '@%']);
         $agent_queues = $sq->fetchAll(PDO::FETCH_ASSOC) ?: [];
     } catch (Exception $e) { /* silent — display gracefully in UI */ }
+}
+// Default agent desktop = SkyConnect React UI (same login/session/SIP as before).
+// Old PHP UI: /app/agent_dashboard/index.php?legacy=1
+if (!isset($_GET['legacy'])) {
+	header('Location: /app/agent_dashboard/skyconnect/');
+	exit;
 }
 header('Cache-Control: no-store, no-cache, must-revalidate');
 header('Pragma: no-cache');
@@ -6762,9 +6787,22 @@ function bindSession(s) {
                 ? (s.remoteIdentity?.uri?.user || window.lastDialedNumber || '')
                 : (window.lastDialedNumber || '');
             if (!(s instanceof Invitation)) {
+                // Local extension-to-extension: SIP 200 means both legs are up —
+                // do not wait for Ethio-style outbound_live B-leg detection.
+                if (/^\d{2,6}$/.test(String(num || ''))) {
+                    window._outboundRingPhase = false;
+                    stopOutboundPoll();
+                    window.stopRingback && window.stopRingback();
+                    if (window._outRingArmTimer) { clearTimeout(window._outRingArmTimer); window._outRingArmTimer = null; }
+                    enableSenders(s);
+                    if (!s._skykinAudioAttached) attachAudio(s);
+                    window.startCallUI && window.startCallUI(num);
+                    window.showToast && window.showToast('Call connected');
+                    return;
+                }
                 window._outboundRingPhase = true;
                 window.setSipStatus && window.setSipStatus('calling', 'Calling: ' + num);
-                // Stay on Calling until outbound_live sees a live B-leg.
+                // Mobile outbound: stay on Calling until outbound_live sees B-leg.
                 startOutboundPoll(localStorage.getItem('sip_ext') || serverExt, num);
                 return;
             }
@@ -7009,6 +7047,20 @@ window.sipBridge.makeCall = function(number) {
                     enableSenders(inv);
                     if (!inv._skykinAudioAttached) {
                         attachAudio(inv);
+                    }
+                    // Local 101/102: SIP 200 = connected. Do NOT force "Calling"
+                    // (that overwrote In Call after Established) or wait on Ethio poll.
+                    if (/^\d{2,6}$/.test(String(number || ''))) {
+                        window._outboundRingPhase = false;
+                        stopOutboundPoll();
+                        window.stopRingback && window.stopRingback();
+                        if (window._outRingArmTimer) { clearTimeout(window._outRingArmTimer); window._outRingArmTimer = null; }
+                        if (!callStartTime) {
+                            window.startCallUI && window.startCallUI(number);
+                        } else {
+                            window.setSipStatus && window.setSipStatus('incall', 'In Call: ' + number);
+                        }
+                        return;
                     }
                     if (!window._outSawActualRing) {
                         window.setSipStatus && window.setSipStatus('calling', 'Calling: ' + number);

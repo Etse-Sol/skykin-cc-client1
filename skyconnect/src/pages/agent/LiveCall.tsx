@@ -6,10 +6,12 @@ import CustomerJourneyTrack, {
 } from '../../components/CustomerJourneyTrack';
 import DialPad from '../../components/DialPad';
 import ConferenceModal from '../../components/ConferenceModal';
+import HeadsetPicker from '../../components/HeadsetPicker';
 import TransferModal from '../../components/TransferModal';
 import { getKnowledgeArticle, lookupContact, type CrmContact, type KnowledgeArticle } from '../../services/crm';
 import { useLiveTranscript } from '../../lib/useLiveTranscript';
-import { suggestFromTranscript, type LiveSuggest } from '../../services/ops';
+import { suggestFromLiveText } from '../../lib/knowledgeLocal';
+import type { LiveSuggest } from '../../services/ops';
 import { useSoftphone } from '../../softphone/SoftphoneContext';
 
 const scriptSteps = [
@@ -83,6 +85,41 @@ export default function LiveCall() {
     lang: sttLang,
     getAudio: phone.getCallAudio,
   });
+  const wasEst = useRef(false);
+  const capRef = useRef('');
+
+  useEffect(() => {
+    const text = [
+      ...stt.lines.map((l) => `${l.speaker === 'you' ? 'You' : 'Caller'}: ${l.text}`),
+      stt.interim ? `You: ${stt.interim}` : '',
+    ]
+      .filter(Boolean)
+      .join('\n');
+    if (!text.trim()) return;
+    capRef.current = text;
+    try {
+      sessionStorage.setItem('sc_last_transcript', text);
+    } catch {
+      /* ignore */
+    }
+  }, [stt.lines, stt.interim]);
+
+  useEffect(() => {
+    if (established) {
+      wasEst.current = true;
+      return;
+    }
+    if (!wasEst.current) return;
+    wasEst.current = false;
+    try {
+      if (capRef.current.trim()) sessionStorage.setItem('sc_last_transcript', capRef.current);
+      sessionStorage.setItem('sc_wrap_pending', '1');
+    } catch {
+      /* ignore */
+    }
+    const t = window.setTimeout(() => navigate('/agent/wrap-up'), 500);
+    return () => window.clearTimeout(t);
+  }, [established, navigate]);
 
   useEffect(() => {
     if (!crmLinkPhone) {
@@ -116,20 +153,11 @@ export default function LiveCall() {
   useEffect(() => {
     const typed = kbAsk.trim();
     const q = typed || transcriptBlob;
-    const am = /[\u1200-\u137F]/.test(q);
-    const words = q.split(/\s+/).filter((w) => w.replace(/[^\p{L}\p{N}]/gu, '').length >= 3);
-    if (!q || (!typed && !am && words.length < 1)) {
+    if (!q) {
       if (!typed) setKb(null);
       return;
     }
-    const t = window.setTimeout(() => {
-      suggestFromTranscript(q)
-        .then((row) => setKb(row))
-        .catch(() => {
-          /* keep last match */
-        });
-    }, kbAsk.trim() ? 350 : 700);
-    return () => window.clearTimeout(t);
+    setKb(suggestFromLiveText(q));
   }, [kbAsk, transcriptBlob]);
 
   useEffect(() => {
@@ -225,6 +253,8 @@ export default function LiveCall() {
           </div>
         </div>
       </div>
+
+      <HeadsetPicker />
 
       {phone.phase === 'ringing' ? (
         <div className="flex flex-wrap gap-2">
@@ -408,10 +438,25 @@ export default function LiveCall() {
                       }`}
                       onClick={() => {
                         const id = Number(a.article_id || 0);
-                        if (!id) return;
-                        getKnowledgeArticle(id)
-                          .then((row) => setKbOpen(row))
-                          .catch(() => setKbOpen(null));
+                        if (id) {
+                          getKnowledgeArticle(id)
+                            .then((row) => setKbOpen(row))
+                            .catch(() =>
+                              setKbOpen({
+                                title: a.title,
+                                tag: a.tag,
+                                body: a.excerpt,
+                                excerpt: a.excerpt,
+                              }),
+                            );
+                          return;
+                        }
+                        setKbOpen({
+                          title: a.title,
+                          tag: a.tag,
+                          body: a.excerpt,
+                          excerpt: a.excerpt,
+                        });
                       }}
                     >
                       <div className="flex items-start justify-between gap-2">

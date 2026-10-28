@@ -5,11 +5,10 @@
  * Idle logout is enforced in skykin_config.php from the admin setting.
  */
 if (session_status() === PHP_SESSION_NONE) {
-	$fpbx_session_path = '/var/lib/php/sessions';
-	if (is_dir($fpbx_session_path)) {
-		session_save_path($fpbx_session_path);
-	}
-	ini_set('session.gc_maxlifetime', '86400');
+	// Same storage as resources/require.php (php.ini). Do not switch to
+	// /var/lib/php/sessions here — a different path mints a new PHPSESSID and
+	// SkyConnect stays on "Signing you in…".
+	ini_set('session.gc_maxlifetime', '28800');
 	ini_set('session.use_strict_mode', '1');
 
 	$https = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')

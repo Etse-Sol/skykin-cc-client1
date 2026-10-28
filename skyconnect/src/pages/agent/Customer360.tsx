@@ -10,6 +10,7 @@ import {
   lookupContact,
   refreshAiSummary,
   saveContact,
+  flushWrapQueue,
   type CrmContact,
 } from '../../services/crm';
 
@@ -43,6 +44,10 @@ export default function Customer360() {
     setContact(null);
     setParams({}, { replace: true });
   }, [setParams]);
+
+  useEffect(() => {
+    void flushWrapQueue();
+  }, []);
 
   useEffect(() => {
     if (selectedPhone) return;

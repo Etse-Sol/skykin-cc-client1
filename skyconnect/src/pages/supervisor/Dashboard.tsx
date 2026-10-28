@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
+import BreakRequests from '../../components/BreakRequests';
 import StatCard from '../../components/StatCard';
 import StatusPill from '../../components/StatusPill';
 import { fetchAgentSession } from '../../services/session';
@@ -12,7 +13,6 @@ import {
   forceAgentStatus,
   fmtSec,
   monitorAgent,
-  resolveLeave,
   statusLabel,
   statusTone,
   type LeaveRequest,
@@ -134,13 +134,14 @@ export default function SupDashboard() {
       {err ? <p className="mb-3 text-sm text-[var(--color-sc-warn)]">{err}</p> : null}
       {msg ? <p className="mb-3 text-sm font-bold">{msg}</p> : null}
 
-      <div className="grid gap-3 sm:grid-cols-4 lg:grid-cols-6">
+      <div className="grid gap-3 sm:grid-cols-4 lg:grid-cols-7">
         <StatCard label="In queue" value={String(waiting)} />
         <StatCard label="Longest wait" value={longestLabel} />
         <StatCard label="Agents online" value={String(online)} />
-        <StatCard label="SLA today" value={`${sla || 0}%`} />
+        <StatCard label="SLA today" value={`${Number(sum?.sla ?? sla) || 0}%`} />
         <StatCard label="Answered" value={String(answered)} />
-        <StatCard label="Avg talk" value={fmtSec(Number(sum?.avg_talk ?? q?.avg_talk ?? 0))} />
+        <StatCard label="AHT" value={fmtSec(Number(sum?.avg_talk ?? q?.avg_talk ?? 0))} />
+        <StatCard label="ASA" value={fmtSec(Number(sum?.avg_wait ?? 0))} />
       </div>
 
       <div className="mt-4 grid gap-3 lg:grid-cols-3">
@@ -260,55 +261,17 @@ export default function SupDashboard() {
         </table>
       </div>
 
-      <div className="mt-4 rounded-xl border border-[var(--color-sc-line)] bg-white p-4">
-        <h2 className="sc-section-title">Break requests</h2>
-        {leaves.length === 0 ? (
-          <p className="mt-2 text-sm text-[var(--color-sc-muted)]">No pending break requests</p>
-        ) : (
-          <ul className="mt-3 space-y-2">
-            {leaves.map((lv) => (
-              <li
-                key={lv.id}
-                className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-[var(--color-sc-line)] px-3 py-2"
-              >
-                <div>
-                  <p className="text-sm font-semibold">
-                    {lv.agent_name || lv.agent_ext} · ext {lv.agent_ext}
-                  </p>
-                  <p className="text-[11px] text-[var(--color-sc-muted)]">
-                    {lv.request_type || 'On Break'}
-                    {lv.reason ? ` — ${lv.reason}` : ''}
-                    {lv.requested_at ? ` · ${lv.requested_at}` : ''}
-                  </p>
-                </div>
-                <div className="flex gap-2">
-                  <button
-                    type="button"
-                    className="sc-btn"
-                    onClick={async () => {
-                      const r = await resolveLeave(domain, lv.id, 'approved');
-                      setMsg(r.ok ? `Approved ${lv.agent_ext}` : r.error || 'Approve failed');
-                      await load().catch(() => {});
-                    }}
-                  >
-                    Approve
-                  </button>
-                  <button
-                    type="button"
-                    className="sc-b2"
-                    onClick={async () => {
-                      const r = await resolveLeave(domain, lv.id, 'denied');
-                      setMsg(r.ok ? `Denied ${lv.agent_ext}` : r.error || 'Deny failed');
-                      await load().catch(() => {});
-                    }}
-                  >
-                    Deny
-                  </button>
-                </div>
-              </li>
-            ))}
-          </ul>
-        )}
+      <div className="mt-4">
+        <BreakRequests
+          domain={domain}
+          leaves={leaves}
+          agents={agents}
+          waiting={waiting}
+          onDone={(m) => {
+            setMsg(m);
+            void load().catch(() => {});
+          }}
+        />
       </div>
     </div>
   );

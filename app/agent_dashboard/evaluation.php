@@ -5,6 +5,9 @@ require_once __DIR__ . '/skykin_config.php';
 
 $is_api = isset($_GET['api']);
 skykin_require_groups(['superadmin', 'admin', 'supervisor'], $is_api);
+if ($is_api && function_exists('session_write_close')) {
+    session_write_close();
+}
 
 $logged_in_user   = $_SESSION['username']    ?? '';
 $logged_in_domain = skykin_default_domain();
@@ -65,7 +68,7 @@ if (isset($_GET['api'])) {
         if ($_GET['api'] === 'calls') {
             $ext    = $_GET['ext']    ?? '';
             $search = $_GET['search'] ?? '';
-            $where  = "domain_name=:d AND start_epoch>=:ts AND start_epoch<=:te AND billsec>0";
+            $where  = "domain_name=:d AND start_epoch>=:ts AND start_epoch<=:te AND (billsec>0 OR (record_name IS NOT NULL AND record_name <> ''))";
             $params = [':d'=>$dom,':ts'=>$ts,':te'=>$te];
             if ($ext)    { $where.=" AND (caller_id_number=:e OR destination_number=:e)"; $params[':e']=$ext; }
             if ($search) { $where.=" AND (caller_id_number LIKE :q OR destination_number LIKE :q)"; $params[':q']='%'.$search.'%'; }
@@ -73,7 +76,8 @@ if (isset($_GET['api'])) {
                 xml_cdr_uuid as cdr_uuid,
                 " . skykin_cdr_time_sql('YYYY-MM-DD HH24:MI') . " as call_time,
                 caller_id_number, caller_id_name, destination_number,
-                direction, billsec, hangup_cause, record_name, record_path
+                direction, billsec, hangup_cause, record_name, record_path,
+                cc_agent, cc_agent_bridged, last_arg
                 FROM v_xml_cdr WHERE $where ORDER BY start_epoch DESC LIMIT 200");
             $s->execute($params);
             $rows = $s->fetchAll(PDO::FETCH_ASSOC);
@@ -90,6 +94,9 @@ if (isset($_GET['api'])) {
             }
             foreach ($rows as &$row) {
                 $row['eval'] = $evalMap[$row['cdr_uuid']] ?? null;
+                $row['agent_ext'] = function_exists('skykin_cdr_row_agent_ext')
+                    ? skykin_cdr_row_agent_ext($row)
+                    : preg_replace('/\D+/', '', (string)($row['destination_number'] ?? ''));
             }
             echo json_encode($rows);
             exit;

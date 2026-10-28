@@ -29,7 +29,9 @@ export type ReportSummary = {
   inbound?: number;
   outbound?: number;
   avg_talk?: number;
+  avg_wait?: number;
   sla?: number;
+  abandon_rate?: number;
 };
 
 export async function fetchReportSummary(domain: string, from?: string, to?: string): Promise<ReportSummary> {
@@ -69,6 +71,7 @@ export type EvalCall = {
   caller_id_number?: string;
   caller_id_name?: string;
   destination_number?: string;
+  agent_ext?: string;
   billsec?: number;
   record_name?: string;
   eval?: { total_score?: number; max_score?: number; grade?: string } | null;
@@ -80,6 +83,88 @@ export async function fetchEvalCalls(domain: string, from?: string, to?: string)
   if (to) q.set('to', to);
   const data = await getJson(`${EVALS}?${q}`);
   return Array.isArray(data) ? data : [];
+}
+
+export async function fetchAiEvalDraft(input: {
+  domain: string;
+  record_name: string;
+  record_path?: string;
+  caller_number?: string;
+  agent_ext?: string;
+  direction?: string;
+  duration?: number;
+  call_time?: string;
+}): Promise<{
+  ok?: boolean;
+  scores?: Record<string, number>;
+  notes?: string;
+  transcript?: string;
+  provider?: string;
+  error?: string;
+}> {
+  const phpEval = () =>
+    postJson(`${EVALS}?api=ai_draft&domain=${encodeURIComponent(input.domain)}`, input);
+  if (import.meta.env.DEV) {
+    try {
+      return await evalOnLocalSkykin(input);
+    } catch (e) {
+      try {
+        return await phpEval();
+      } catch {
+        const msg = e instanceof Error ? e.message : 'Local SkyKin AI failed';
+        throw new Error(
+          `${msg} — start AI: python tools/skykin_ai_local/server.py (port 8100)`,
+        );
+      }
+    }
+  }
+  try {
+    return await phpEval();
+  } catch {
+    return evalOnLocalSkykin(input);
+  }
+}
+
+async function evalOnLocalSkykin(input: {
+  domain: string;
+  record_name: string;
+  record_path?: string;
+  caller_number?: string;
+  agent_ext?: string;
+  direction?: string;
+  duration?: number;
+  call_time?: string;
+}) {
+  const url = recUrl(input.record_name);
+  if (!url) throw new Error('No recording on this call');
+  const rec = await fetch(url, { credentials: 'same-origin' });
+  if (!rec.ok) throw new Error(`Could not load recording (${rec.status})`);
+  const blob = await rec.blob();
+  const fd = new FormData();
+  fd.append('file', blob, input.record_name || 'call.wav');
+  fd.append(
+    'meta',
+    JSON.stringify({
+      domain: input.domain,
+      caller: input.caller_number || '',
+      agent_ext: input.agent_ext || '',
+      direction: input.direction || '',
+      duration: input.duration || 0,
+      call_time: input.call_time || '',
+    }),
+  );
+  fd.append('domain', input.domain);
+  fd.append('caller', input.caller_number || '');
+  fd.append('agent_ext', input.agent_ext || '');
+  fd.append('direction', input.direction || '');
+  fd.append('duration', String(input.duration || 0));
+  fd.append('task', 'evaluation');
+  const r = await fetch('/v1/evaluate', { method: 'POST', body: fd, signal: AbortSignal.timeout(180000) });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok || data.ok === false) {
+    throw new Error(data.error || data.detail || `evaluate ${r.status}`);
+  }
+  return data;
 }
 
 export async function saveEvaluation(input: Record<string, unknown>): Promise<any> {
@@ -140,7 +225,39 @@ export async function suggestFromTranscript(transcript: string): Promise<LiveSug
   return postJson(`${OPS}?op=live_suggest`, { transcript });
 }
 
+async function transcribeLocalAsr(blob: Blob, lang: string): Promise<string> {
+  const fd = new FormData();
+  const ext = blob.type.includes('ogg') ? 'ogg' : 'webm';
+  fd.append('audio_file', blob, `live.${ext}`);
+  fd.append('file', blob, `live.${ext}`);
+  const lang2 = (lang || '').slice(0, 2).toLowerCase();
+  const q = lang2 ? `?task=transcribe&output=json&language=${encodeURIComponent(lang2)}` : '?task=transcribe&output=json';
+  const r = await fetch(`/asr${q}`, { method: 'POST', body: fd });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok || data.ok === false) {
+    throw new Error(data.error || data.detail || `${r.status}`);
+  }
+  return String(data.text || data.transcript || '').trim();
+}
+
+export async function fetchAiHealth(): Promise<{ ok?: boolean; error?: string; base?: string; health?: any }> {
+  return opsGet('ai_health');
+}
+
+export async function fetchQueueSla(domain: string, from?: string, to?: string): Promise<any[]> {
+  const q = new URLSearchParams({ api: 'queue_sla', domain });
+  if (from) q.set('from', from);
+  if (to) q.set('to', to);
+  const data = await getJson(`${REPORTS}?${q}`);
+  return Array.isArray(data) ? data : [];
+}
+
 export async function transcribeLiveChunk(blob: Blob, lang: string): Promise<string> {
+  try {
+    return await transcribeLocalAsr(blob, lang);
+  } catch {
+    /* PHP live_transcribe on the PBX host */
+  }
   const fd = new FormData();
   const ext = blob.type.includes('ogg') ? 'ogg' : 'webm';
   fd.append('chunk', blob, `live.${ext}`);

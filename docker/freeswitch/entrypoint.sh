@@ -538,9 +538,9 @@ if [ -n "$FS_DOMAIN" ]; then
   fi
   # Local/queue bridges to user/<ext> must enable DTLS (media_webrtc) or
   # Chrome answers with "SDP without DTLS fingerprint" and the call dies.
-  USER_BRIDGE="{rtp_secure_media=optional,media_webrtc=true}"
+  USER_BRIDGE="{rtp_secure_media=true,media_webrtc=true}"
   if [ -n "$EXTERNAL_RTP_IP" ]; then
-    USER_BRIDGE="{rtp_secure_media=optional,media_webrtc=true,rtp_advertise_ip=${EXTERNAL_RTP_IP},include_external_ip=true}"
+    USER_BRIDGE="{rtp_secure_media=true,media_webrtc=true,rtp_advertise_ip=${EXTERNAL_RTP_IP},include_external_ip=true}"
   fi
   # The dashboards look recordings up through the CDR, so the call record has to
   # carry domain_name plus record_path/record_name. Use the FusionPBX archive
@@ -735,8 +735,12 @@ ${OUT_HUP}
       <action application="set" data="hangup_after_bridge=true"/>
       <action application="set" data="continue_on_fail=true"/>
       <action application="set" data="call_timeout=30"/>
-      <action application="set" data="rtp_secure_media=optional"/>
+      <action application="set" data="media_webrtc=true"/>
+      <action application="set" data="rtp_secure_media=true"/>
 ${RTP_ADV}
+      <action application="export" data="media_webrtc=true"/>
+      <action application="export" data="rtp_secure_media=true"/>
+      <action application="answer"/>
       <action application="bridge" data="${USER_BRIDGE}user/\$1@${FS_DOMAIN}"/>
     </condition>
   </extension>

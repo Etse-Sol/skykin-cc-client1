@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
 import StatusPill from '../../components/StatusPill';
 import { fetchAgentSession } from '../../services/session';
 import {
+  fetchAiEvalDraft,
   fetchEvalCalls,
   recUrl,
   saveEvaluation,
@@ -255,6 +257,40 @@ export default function Quality() {
               ) : (
                 <p className="sc-meta">Recording appears when the CDR has a file</p>
               )}
+              <button
+                type="button"
+                className="sc-b2"
+                disabled={!evalHit?.record_name}
+                onClick={() => {
+                  if (!evalHit?.record_name) {
+                    setMsg('No recording on this call for AI');
+                    return;
+                  }
+                  setMsg('SkyKin AI scoring…');
+                  void (async () => {
+                    try {
+                      const s = await fetchAgentSession();
+                      const r = await fetchAiEvalDraft({
+                        domain: s.domain,
+                        record_name: evalHit.record_name || '',
+                        caller_number: sel?.caller,
+                        agent_ext: sel?.agent,
+                        duration: Number(String(sel?.duration || '').replace(/\D/g, '') || 0),
+                        call_time: sel?.time,
+                      });
+                      const next: Record<string, number> = {};
+                      for (const [k] of CRITERIA) next[k] = Number(r.scores?.[k] || 0);
+                      setScores(next);
+                      if (r.notes) setNotes(`[SkyKin AI] ${r.notes}`);
+                      setMsg('AI filled scores — review, then Save score.');
+                    } catch (e) {
+                      setMsg(e instanceof Error ? e.message : 'AI draft failed');
+                    }
+                  })();
+                }}
+              >
+                Auto-score with AI
+              </button>
               {evalHit?.eval ? (
                 <StatusPill label={`Grade ${evalHit.eval.grade}`} tone="ok" />
               ) : null}
@@ -287,6 +323,14 @@ export default function Quality() {
                 onChange={(e) => setNotes(e.target.value)}
               />
               {msg ? <p className="text-sm font-bold">{msg}</p> : null}
+              {msg.includes('learning') || msg.includes('course') ? (
+                <Link
+                  className="text-sm font-bold text-[var(--color-sc-green)] underline"
+                  to={`/supervisor/learning?ext=${encodeURIComponent(String(sel.agent || '').replace(/\D/g, ''))}`}
+                >
+                  Open Learning for this agent
+                </Link>
+              ) : null}
               <button type="button" onClick={() => void submit()} className="sc-btn w-full">
                 Save score
               </button>

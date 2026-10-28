@@ -2,6 +2,7 @@
 
 import type { Session } from 'sip.js';
 import { Web } from 'sip.js';
+import { micConstraints } from './headset';
 
 export const ICE_GATHERING_TIMEOUT_MS = 8000;
 
@@ -12,10 +13,8 @@ export const ICE_PC_CONFIG: RTCConfiguration = {
   ],
 };
 
-export const MIC_CONSTRAINTS: MediaStreamConstraints = {
-  audio: true,
-  video: false,
-};
+/** Current headset (or system default) mic. */
+export const MIC_CONSTRAINTS = (): MediaStreamConstraints => micConstraints();
 
 /**
  * MediaStream factory that wraps getUserMedia through WebAudio proxy streams

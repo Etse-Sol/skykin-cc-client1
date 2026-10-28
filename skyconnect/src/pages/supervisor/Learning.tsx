@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import StatusPill from '../../components/StatusPill';
 import { fetchAgentSession } from '../../services/session';
 import { fetchQaAgentSummary, opsGet, opsPost, weekRange } from '../../services/ops';
@@ -33,6 +33,7 @@ function blankQuestion(): QuizQ {
 }
 
 export default function SupervisorLearning() {
+  const [params] = useSearchParams();
   const [tab, setTab] = useState<'progress' | 'courses'>('progress');
   const [domain, setDomain] = useState('');
   const [qa, setQa] = useState<any[]>([]);
@@ -79,13 +80,14 @@ export default function SupervisorLearning() {
         setFloor(ags);
         await loadCatalog(s.domain);
         await loadTeam(s.domain);
-        const first = ags[0]?.ext || list[0]?.agent_ext || '';
+        const fromEval = (params.get('ext') || '').replace(/\D/g, '');
+        const first = fromEval || ags[0]?.ext || list[0]?.agent_ext || '';
         if (first) setExt(String(first));
       } catch (e) {
         setErr(e instanceof Error ? e.message : 'Learning load failed');
       }
     })();
-  }, [loadCatalog, loadTeam, range.from, range.to]);
+  }, [loadCatalog, loadTeam, range.from, range.to, params]);
 
   useEffect(() => {
     if (!ext || !domain) return;
@@ -169,7 +171,7 @@ export default function SupervisorLearning() {
         <div>
           <h1 className="text-[22px] font-bold">Learning</h1>
           <p className="sc-meta mt-1">
-            Courses from quality scores · agents take a quiz · you track progress
+            Courses from AI evaluation scores (under 4/5) · agents take a quiz · you track progress
           </p>
         </div>
         <div className="flex gap-2">

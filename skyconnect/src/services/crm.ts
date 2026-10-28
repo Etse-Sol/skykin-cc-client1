@@ -102,6 +102,7 @@ export async function addJourneyEvent(input: {
       summary: input.summary,
       event_at: input.event_at || '',
     }),
+    signal: AbortSignal.timeout(5000),
   });
   if (!r.ok) throw new Error(`journey_add ${r.status}`);
   const data = await r.json();
@@ -179,12 +180,37 @@ export async function listCases(opts?: {
   const text = await r.text();
   if (!r.ok) throw new Error(`crm cases ${r.status}`);
   if (!text.trim()) return [];
+  let remote: CrmCaseRow[] = [];
   try {
     const data = JSON.parse(text) as { cases?: CrmCaseRow[]; error?: string };
-    return Array.isArray(data?.cases) ? data.cases : [];
+    remote = Array.isArray(data?.cases) ? data.cases : [];
   } catch {
-    return [];
+    remote = [];
   }
+  let queued: CrmCaseRow[] = [];
+  try {
+    const raw = JSON.parse(sessionStorage.getItem('sc_wrap_queue') || '[]') as Array<{
+      phone?: string;
+      reason?: string;
+      outcome?: string;
+      notes?: string;
+      agent_id?: string;
+      at?: number;
+    }>;
+    queued = raw
+      .filter((row) => !opts?.phone || String(row.phone || '').includes(opts.phone.trim()))
+      .map((row) => ({
+        created_at: row.at ? new Date(row.at).toISOString().slice(0, 16).replace('T', ' ') : '',
+        customer_phone: row.phone,
+        issue_type: row.reason,
+        description: row.notes,
+        status: row.outcome || 'Open',
+        agent_id: row.agent_id,
+      }));
+  } catch {
+    queued = [];
+  }
+  return [...queued, ...remote];
 }
 
 /** Save case from wrap-up: call reason + outcome/status. */
@@ -203,6 +229,7 @@ export async function saveCase(input: {
     credentials: 'same-origin',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(input),
+    signal: AbortSignal.timeout(5000),
   });
   if (!r.ok) throw new Error(`case_save ${r.status}`);
   const data = await r.json();
@@ -273,6 +300,52 @@ export async function getKnowledgeArticle(id: number): Promise<KnowledgeArticle 
   const data = await r.json().catch(() => ({}));
   if (!r.ok || data.ok === false) throw new Error(data.error || `knowledge ${r.status}`);
   return data?.article && typeof data.article === 'object' ? data.article : null;
+}
+
+/** Retry wrap-up rows that only landed in sessionStorage. */
+export async function flushWrapQueue(): Promise<number> {
+  let q: Array<{
+    phone?: string;
+    reason?: string;
+    outcome?: string;
+    notes?: string;
+    agent_id?: string;
+  }> = [];
+  try {
+    q = JSON.parse(sessionStorage.getItem('sc_wrap_queue') || '[]');
+  } catch {
+    return 0;
+  }
+  if (!Array.isArray(q) || !q.length) return 0;
+  const left: typeof q = [];
+  let ok = 0;
+  for (const item of q) {
+    const phone = String(item.phone || '').trim();
+    const path = String(item.reason || '').trim();
+    if (!phone || !path) continue;
+    const note = String(item.notes || '').trim();
+    const outc = String(item.outcome || 'Resolved');
+    const summary = note ? `${path} · ${outc} — ${note}`.slice(0, 200) : `${path} · ${outc}`;
+    try {
+      await addJourneyEvent({ phone, channel: 'Voice', summary });
+      await saveCase({
+        phone,
+        reason: path,
+        outcome: outc,
+        notes: note,
+        agent_id: String(item.agent_id || ''),
+      });
+      ok += 1;
+    } catch {
+      left.push(item);
+    }
+  }
+  try {
+    sessionStorage.setItem('sc_wrap_queue', JSON.stringify(left));
+  } catch {
+    /* ignore */
+  }
+  return ok;
 }
 
 export function initials(name: string): string {

@@ -1,4 +1,5 @@
 import { NavLink, useLocation } from 'react-router-dom';
+import { SIGNIN } from '../services/session';
 
 const workspace = [
   { to: '/agent/home', label: 'Home' },
@@ -65,8 +66,14 @@ export default function ContactNav({ role, logout, onLogout }: Props) {
         <p className="sc-meta px-3">Role: {role}</p>
         <a
           className="sc-meta mt-1 inline-block px-3 text-[var(--color-sc-green)] hover:underline"
-          href={logout || '/logout.php'}
-          onClick={onLogout}
+          href={SIGNIN}
+          onClick={(e) => {
+            onLogout?.();
+            e.preventDefault();
+            void fetch('/logout.php', { credentials: 'same-origin', redirect: 'manual' }).finally(() => {
+              window.location.assign(SIGNIN);
+            });
+          }}
         >
           Log out
         </a>

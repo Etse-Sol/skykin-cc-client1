@@ -1,8 +1,17 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import StatusPill from '../../components/StatusPill';
 import { fetchAgentSession } from '../../services/session';
-import { opsGet, opsPost } from '../../services/ops';
-import { fetchSupAgents, initials, type SupAgent } from '../../services/supervisorApi';
+import { fetchReportSummary, opsGet, opsPost, todayRange } from '../../services/ops';
+import {
+  fetchSupAgents,
+  fetchSupQueue,
+  floorSnapshot,
+  fmtSec,
+  initials,
+  statusLabel,
+  statusTone,
+  type SupAgent,
+} from '../../services/supervisorApi';
 
 const DAY_NAMES = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 const DAY_VALS = [1, 2, 3, 4, 5, 6, 7];
@@ -58,6 +67,8 @@ export default function WfmSchedule() {
   const [msg, setMsg] = useState('');
   const [err, setErr] = useState('');
   const [domain, setDomain] = useState('');
+  const [waiting, setWaiting] = useState(0);
+  const [perf, setPerf] = useState({ inbound: 0, answered: 0, missed: 0, abandoned: 0, avgTalk: 0, sla: 0 });
 
   const applyPack = (data: any) => {
     setShifts(Array.isArray(data.shifts) ? data.shifts : []);
@@ -68,15 +79,38 @@ export default function WfmSchedule() {
   const load = useCallback(async () => {
     const s = await fetchAgentSession();
     setDomain(s.domain);
-    const [ags, wfm] = await Promise.all([fetchSupAgents(s.domain), opsGet('wfm', { domain: s.domain })]);
+    const { from, to } = todayRange();
+    const [ags, wfm, q, sm] = await Promise.all([
+      fetchSupAgents(s.domain),
+      opsGet('wfm', { domain: s.domain }),
+      fetchSupQueue(s.domain).catch(() => null),
+      fetchReportSummary(s.domain, from, to).catch(() => ({})),
+    ]);
     setAgents(ags);
     applyPack(wfm);
     setBulkShift((cur) => cur || (wfm.shifts?.[0] ? String(wfm.shifts[0].shift_id) : ''));
+    const waitN =
+      q?.waiting_callers?.length ?? Number(q?.queues?.reduce((n, r) => n + (r.waiting || 0), 0) || 0);
+    setWaiting(waitN);
+    const inbound = Number(sm.inbound ?? q?.inbound_today ?? 0);
+    const answered = Number(sm.answered ?? q?.answered_today ?? 0);
+    const missed = Number(sm.missed ?? q?.missed_today ?? 0);
+    const abandoned = Number(sm.abandoned ?? q?.abandoned_today ?? 0);
+    setPerf({
+      inbound,
+      answered,
+      missed,
+      abandoned,
+      avgTalk: Number(sm.avg_talk ?? q?.avg_talk ?? 0),
+      sla: inbound > 0 ? Math.round((answered / inbound) * 100) : Number(q?.sla ?? 0),
+    });
     setErr('');
   }, []);
 
   useEffect(() => {
     load().catch((e) => setErr(e instanceof Error ? e.message : 'Workforce load failed'));
+    const t = window.setInterval(() => load().catch(() => {}), 8000);
+    return () => window.clearInterval(t);
   }, [load]);
 
   const asgByExt = useMemo(() => {
@@ -97,6 +131,20 @@ export default function WfmSchedule() {
 
   const weekStart = mondayYmd();
   const unassigned = agents.filter((a) => !asgByExt[a.ext]);
+  const floor = floorSnapshot(agents);
+  const jsDow = new Date().getDay();
+  const todayDow = jsDow === 0 ? 7 : jsDow;
+  const todayYmd = new Date().toISOString().slice(0, 10);
+  const scheduled = agents.filter((a) => {
+    const asg = asgByExt[a.ext];
+    const sh = asg ? shiftById[String(asg.shift_id)] : undefined;
+    if (holidayMap[todayYmd]) return false;
+    const days = (sh?.days || '')
+      .split(',')
+      .map((x) => parseInt(x, 10))
+      .filter((n) => n >= 1 && n <= 7);
+    return !!sh && days.includes(todayDow);
+  }).length;
 
   const saveShift = async () => {
     if (!shiftForm.name.trim()) return;
@@ -135,11 +183,48 @@ export default function WfmSchedule() {
       <div>
         <h1 className="text-[24px] font-bold">Workforce</h1>
         <p className="sc-meta mt-1">
-          Assign every agent a shift. Weekends and holidays are off unless the shift includes those days.
+          Intraday floor plus weekly roster. Weekends and holidays are off unless the shift includes those days.
         </p>
       </div>
       {err ? <p className="text-sm text-[var(--color-sc-warn)]">{err}</p> : null}
       {msg ? <p className="text-sm font-bold">{msg}</p> : null}
+
+      <section className="sc-card">
+        <h2 className="text-[16px] font-bold">Intraday</h2>
+        <p className="sc-meta mt-1">Live online count versus today&apos;s actual performance</p>
+        <div className="mt-3 grid gap-3 sm:grid-cols-4 lg:grid-cols-8">
+          {[
+            ['Online now', String(floor.online)],
+            ['Ready', String(floor.ready)],
+            ['On call', String(floor.onCall)],
+            ['On break', String(floor.onBreak)],
+            ['Scheduled today', String(scheduled)],
+            ['In queue', String(waiting)],
+            ['Answered', String(perf.answered)],
+            ['SLA', `${perf.sla || 0}%`],
+          ].map(([k, v]) => (
+            <div key={k} className="rounded-[12px] border border-[var(--color-sc-line)] bg-[var(--color-sc-soft)] px-3 py-2">
+              <p className="text-[11px] font-bold uppercase tracking-wide text-[var(--color-sc-muted)]">{k}</p>
+              <p className="mt-1 text-[22px] font-extrabold tabular-nums">{v}</p>
+            </div>
+          ))}
+        </div>
+        <p className="sc-meta mt-3">
+          Missed {perf.missed} · abandoned {perf.abandoned} · inbound {perf.inbound} · avg talk {fmtSec(perf.avgTalk)} ·{' '}
+          {floor.online} of {scheduled || floor.total} scheduled are online
+        </p>
+        <ul className="mt-3 grid gap-1 sm:grid-cols-2 lg:grid-cols-3">
+          {agents.map((a) => (
+            <li key={a.ext} className="flex items-center justify-between gap-2 text-sm">
+              <span>
+                {a.name || a.ext}
+                <span className="sc-meta"> · {a.ext}</span>
+              </span>
+              <StatusPill label={statusLabel(a)} tone={statusTone(a.status)} />
+            </li>
+          ))}
+        </ul>
+      </section>
 
       <div className="flex flex-wrap items-start gap-4">
         <section className="sc-card min-w-[260px] flex-[1_1_280px]">

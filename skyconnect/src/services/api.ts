@@ -38,6 +38,7 @@ export async function saveWrapUp(payload: {
     credentials: 'same-origin',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
+    signal: AbortSignal.timeout(6000),
   });
   if (!r.ok) throw new Error(`wrap-up ${r.status}`);
   return r.json();

@@ -6,6 +6,9 @@ require_once __DIR__ . '/skykin_config.php';
 // Agents and supervisors both use CRM (caller lookup / contacts)
 $is_api = isset($_GET['api']);
 skykin_require_login($is_api);
+if ($is_api && function_exists('session_write_close')) {
+    session_write_close();
+}
 
 $logged_in_user   = $_SESSION['username']    ?? '';
 $logged_in_domain = skykin_default_domain();

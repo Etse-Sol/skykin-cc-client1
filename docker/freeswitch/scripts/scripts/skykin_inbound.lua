@@ -323,7 +323,45 @@ if waiting_path then
   freeswitch.consoleLog("NOTICE", "skykin waiting prompt=" .. waiting_path .. "\n")
 end
 
-local queue = "8000@" .. domain
+local dest_now = session:getVariable("destination_number") or ""
+local queue_ext = dest_now:match("^[89]%d%d%d$") or "8000"
+local queue = queue_ext .. "@" .. domain
+local hunt_allow = nil
+do
+  local want = {}
+  local any = false
+  local function ingest(path)
+    local f = io.open(path, "r")
+    if not f then return end
+    for line in f:lines() do
+      if line:sub(1, 1) ~= "#" and line ~= "" then
+        local a, b, c = line:match("^([^|]+)|([^|]+)|([^|]+)$")
+        if a and b and c and a == domain and (b == queue_ext or b == "*") then
+          want[c] = true
+          any = true
+        elseif not c then
+          local d, e = line:match("^([^|]+)|([^|]+)$")
+          if d == domain and e and e ~= "" then
+            want[e] = true
+            any = true
+          end
+        end
+      end
+    end
+    f:close()
+  end
+  ingest("/var/lib/freeswitch/recordings/skykin_hunt_agents.txt")
+  ingest("/etc/freeswitch/scripts/skykin_hunt_agents.txt")
+  if any then
+    hunt_allow = want
+    freeswitch.consoleLog("NOTICE", "skykin hunt filter queue=" .. queue
+      .. " agents=" .. tostring((function()
+        local n = 0
+        for _ in pairs(want) do n = n + 1 end
+        return n
+      end)()) .. "\n")
+  end
+end
 -- Agent WebRTC must use the PUBLIC RTP IP. Inbound A-leg often has
 -- rtp_advertise_ip=LAN (10.0.0.77) for the carrier leg — reusing that
 -- broke agent ringing (caller heard ringback, softphone never showed).
@@ -337,7 +375,7 @@ local function public_rtp_ip()
       and not sess:match("^172%.(1[6-9]|2%d|3[0-1])%.") then
     return sess
   end
-  return "196.189.236.126"
+  return "196.189.236.103"
 end
 local rtp_ip = public_rtp_ip()
 freeswitch.consoleLog("NOTICE", "skykin inbound agent rtp_ip=" .. rtp_ip .. "\n")
@@ -448,6 +486,7 @@ local function ready_agents(skip)
       local ext = (c[5] or ""):match("user/([^@]+)")
       local status, state = c[6] or "", c[7] or ""
       if ext and not skip[ext]
+          and (not hunt_allow or hunt_allow[ext])
           and status == "Available" and (state == "Waiting" or state == "Idle")
           and registered(ext) and not on_a_call(ext) then
         local bridge_end = tonumber(c[14]) or 0

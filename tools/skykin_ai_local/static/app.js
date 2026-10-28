@@ -92,7 +92,9 @@
         'ASR: ' + (j.asr_provider || 'ethio-asr') +
         ' · Scorer: ' + (j.provider || 'unknown');
       showScores(j.scores || {});
-      notesEl.textContent = j.notes || '';
+      notesEl.textContent =
+        String(j.notes || '').trim() ||
+        'Coach notes stay here after scoring. If this is empty, re-run evaluation.';
       const tr = j.transcript || '(empty)';
       transcriptEl.textContent = tr;
       let eth = 0;

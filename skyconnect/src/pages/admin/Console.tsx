@@ -99,7 +99,8 @@ export default function AdminConsole() {
           <Link to="/admin/ivr" className="sc-b2">IVR designer</Link>
           <Link to="/admin/chatbot" className="sc-b2">Chatbot studio</Link>
           <Link to="/admin/queues" className="sc-b2">Queues</Link>
-          <Link to="/admin/users" className="sc-b2">Users</Link>
+          <Link to="/admin/users" className="sc-b2">Accounts</Link>
+          <Link to="/admin/roles" className="sc-b2">Roles</Link>
           <Link to="/admin/reports/ivr" className="sc-b2">IVR report</Link>
           <Link to="/admin/reports/reasons" className="sc-b2">Call reasons</Link>
         </div>

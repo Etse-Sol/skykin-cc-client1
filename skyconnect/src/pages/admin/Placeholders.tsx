@@ -1,10 +1,21 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import StudioPage from './StudioPage';
 import Knowledge from '../agent/Knowledge';
 import { useStudio } from './useStudio';
 import { fetchAgentSession } from '../../services/session';
 import { listKnowledge, type KnowledgeArticle } from '../../services/crm';
-import { opsGet, opsPost, opsUpload } from '../../services/ops';
+import { fetchAiHealth, opsGet, opsPost, opsUpload } from '../../services/ops';
+
+type IvrBranchDraft = { digit: string; param: string; submenu: string };
+
+function blankBranch(digit = ''): IvrBranchDraft {
+  return { digit, param: '', submenu: '' };
+}
+
+function destExtFromParam(param: string): string {
+  const m = String(param || '').match(/transfer\s+(\d+)/i);
+  return m ? m[1] : '';
+}
 
 export function AdminIvr() {
   const { data, err, save } = useStudio();
@@ -12,8 +23,9 @@ export function AdminIvr() {
   const opts = data?.ivr_options || [];
   const [msg, setMsg] = useState('');
   const [draft, setDraft] = useState<Record<string, string>>({});
-  const [add, setAdd] = useState({ menu: '', digits: '', param: 'transfer 900 XML ${domain_name}' });
+  const [add, setAdd] = useState({ menu: '', digits: '', param: '', submenu: '' });
   const [create, setCreate] = useState({ name: '', extension: '', greet: '' });
+  const [branches, setBranches] = useState<IvrBranchDraft[]>([blankBranch('1'), blankBranch('2')]);
   const destParam = (_kind: string, ext: string) => `transfer ${ext.replace(/\D/g, '')} XML \${domain_name}`;
   const run = async (fn: () => Promise<void>) => {
     setMsg('');
@@ -24,8 +36,89 @@ export function AdminIvr() {
       setMsg(e instanceof Error ? e.message : 'Save failed');
     }
   };
+  const destSelect = (value: string, onPick: (param: string) => void) => (
+    <select
+      className="sc-input"
+      value={value}
+      onChange={(e) => onPick(e.target.value)}
+    >
+      <option value="">Destination…</option>
+      {(data?.queues || []).map((q) => (
+        <option key={q.call_center_queue_uuid} value={destParam('queue', String(q.queue_extension || ''))}>
+          Queue {q.queue_name} ({q.queue_extension})
+        </option>
+      ))}
+      {menus.map((m) => (
+        <option key={m.ivr_menu_uuid} value={destParam('ivr', String(m.ivr_menu_extension || ''))}>
+          IVR {m.ivr_menu_name} ({m.ivr_menu_extension})
+        </option>
+      ))}
+      {(data?.flows || []).map((f: { call_flow_uuid?: string; call_flow_name?: string; call_flow_extension?: string }) => (
+        <option key={f.call_flow_uuid} value={destParam('flow', String(f.call_flow_extension || ''))}>
+          Flow {f.call_flow_name} ({f.call_flow_extension})
+        </option>
+      ))}
+    </select>
+  );
+  const menuByExt: Record<string, any> = {};
+  for (const m of menus) menuByExt[String(m.ivr_menu_extension || '')] = m;
+  const queueByExt: Record<string, string> = {};
+  for (const q of data?.queues || []) queueByExt[String(q.queue_extension || '')] = String(q.queue_name || q.queue_extension);
+  const flowByExt: Record<string, string> = {};
+  for (const f of data?.flows || []) flowByExt[String(f.call_flow_extension || '')] = String(f.call_flow_name || f.call_flow_extension);
+  const childExts = new Set(
+    opts.map((o) => destExtFromParam(o.param)).filter((e) => e && menuByExt[e]),
+  );
+  const roots = menus.filter((m) => !childExts.has(String(m.ivr_menu_extension || '')));
+  const destLabel = (param: string) => {
+    const ext = destExtFromParam(param);
+    if (ext && menuByExt[ext]) return { kind: 'ivr' as const, title: menuByExt[ext].ivr_menu_name, ext };
+    if (ext && queueByExt[ext]) return { kind: 'queue' as const, title: queueByExt[ext], ext };
+    if (ext && flowByExt[ext]) return { kind: 'flow' as const, title: flowByExt[ext], ext };
+    return { kind: 'other' as const, title: param || '—', ext };
+  };
+  const renderNode = (m: any, seen: Set<string>): ReactNode => {
+    if (!m || seen.has(m.ivr_menu_uuid)) return null;
+    const next = new Set(seen);
+    next.add(m.ivr_menu_uuid);
+    const digits = opts.filter((o) => o.ivr_menu_uuid === m.ivr_menu_uuid);
+    return (
+      <div key={m.ivr_menu_uuid} className="sc-ivr-tree">
+        <div className="sc-ivr-node">
+          {m.ivr_menu_name}
+          <div className="mt-1 text-[11px] font-semibold text-[var(--color-sc-muted)]">ext {m.ivr_menu_extension}</div>
+        </div>
+        {digits.length ? (
+          <>
+            <div className="sc-ivr-stem" />
+            <div className="sc-ivr-kids">
+              {digits.map((d) => {
+                const dest = destLabel(d.param);
+                const child = dest.kind === 'ivr' ? menuByExt[dest.ext] : null;
+                return (
+                  <div key={d.ivr_menu_option_uuid || d.digits} className="sc-ivr-arm">
+                    <div className="sc-ivr-stem" />
+                    <span className="sc-ivr-digit">Press {d.digits}</span>
+                    <div className="sc-ivr-stem" />
+                    {child ? (
+                      renderNode(child, next)
+                    ) : (
+                      <div className="sc-ivr-leaf">
+                        {dest.kind === 'queue' ? 'Queue' : dest.kind === 'flow' ? 'Flow' : 'Go to'} {dest.title}
+                        {dest.ext ? <div className="mt-1 text-[11px] font-semibold text-[var(--color-sc-muted)]">ext {dest.ext}</div> : null}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </>
+        ) : null}
+      </div>
+    );
+  };
   return (
-    <StudioPage title="Visual IVR" path="/admin/ivr" blurb="Menu tree and digit destinations on this domain">
+    <StudioPage title="Visual IVR" path="/admin/ivr" blurb="Create a menu, then branch each digit to a queue, flow, or another IVR">
       {err ? <p className="text-sm text-[var(--color-sc-warn)]">{err}</p> : null}
       {msg ? <p className="text-sm font-bold">{msg}</p> : null}
       <section className="sc-card">
@@ -52,9 +145,46 @@ export function AdminIvr() {
             ))}
           </select>
         </div>
+        <h3 className="mt-4 text-sm font-bold">Branches (digits)</h3>
+        <p className="sc-meta mb-2">Each digit goes to a queue, existing IVR, flow, or a new submenu.</p>
+        <ul className="space-y-2">
+          {branches.map((b, i) => (
+            <li key={i} className="grid gap-2 sm:grid-cols-4">
+              <input
+                className="sc-input"
+                placeholder="Digit"
+                value={b.digit}
+                onChange={(e) =>
+                  setBranches((rows) => rows.map((row, n) => (n === i ? { ...row, digit: e.target.value.replace(/\D/g, '').slice(0, 4) } : row)))
+                }
+              />
+              {destSelect(b.param, (param) =>
+                setBranches((rows) => rows.map((row, n) => (n === i ? { ...row, param, submenu: '' } : row))),
+              )}
+              <input
+                className="sc-input"
+                placeholder="Or new submenu name"
+                value={b.submenu}
+                onChange={(e) =>
+                  setBranches((rows) => rows.map((row, n) => (n === i ? { ...row, submenu: e.target.value, param: '' } : row)))
+                }
+              />
+              <button
+                type="button"
+                className="sc-b2"
+                onClick={() => setBranches((rows) => rows.filter((_, n) => n !== i))}
+              >
+                Remove
+              </button>
+            </li>
+          ))}
+        </ul>
+        <button type="button" className="sc-b2 mt-2" onClick={() => setBranches((rows) => [...rows, blankBranch(String(rows.length + 1))])}>
+          Add branch
+        </button>
         <button
           type="button"
-          className="sc-btn mt-3"
+          className="sc-btn mt-3 ml-2"
           onClick={() =>
             void run(async () => {
               await save('ivr_save', {
@@ -62,41 +192,26 @@ export function AdminIvr() {
                 ivr_menu_extension: create.extension || data?.next_service_extension || '9000',
                 ivr_menu_greet_long: create.greet,
                 ivr_menu_enabled: true,
+                branches: branches
+                  .filter((b) => b.digit && (b.param || b.submenu.trim()))
+                  .map((b) => ({
+                    digits: b.digit,
+                    param: b.param,
+                    new_submenu: b.submenu.trim(),
+                  })),
               });
               setCreate({ name: '', extension: '', greet: '' });
+              setBranches([blankBranch('1'), blankBranch('2')]);
             })
           }
         >
-          Create menu
+          Create menu and branches
         </button>
       </section>
       <section className="sc-card overflow-x-auto">
         <h2 className="mb-3 text-[16px] font-bold">Menu tree</h2>
         <div className="flex min-w-max gap-6">
-          {menus.map((m) => {
-            const digits = opts.filter((o) => o.ivr_menu_uuid === m.ivr_menu_uuid);
-            return (
-              <div key={m.ivr_menu_uuid} className="w-[220px]">
-                <div className="rounded-[12px] border border-[var(--color-sc-line)] bg-[var(--color-sc-soft)] px-3 py-2 text-center text-sm font-bold">
-                  {m.ivr_menu_name}
-                  <div className="mt-1 text-[11px] font-semibold text-[var(--color-sc-muted)]">ext {m.ivr_menu_extension}</div>
-                </div>
-                <div className="mx-auto h-4 w-px bg-[var(--color-sc-line)]" />
-                <ul className="space-y-2">
-                  {digits.map((d) => (
-                    <li
-                      key={d.ivr_menu_option_uuid || d.digits}
-                      className="rounded-[10px] border border-[var(--color-sc-line)] bg-white px-2 py-2 text-xs"
-                    >
-                      <strong>Press {d.digits}</strong>
-                      <p className="sc-meta mt-1 break-all">{d.param}</p>
-                    </li>
-                  ))}
-                  {digits.length === 0 ? <li className="sc-meta text-center">No digits</li> : null}
-                </ul>
-              </div>
-            );
-          })}
+          {roots.map((m) => renderNode(m, new Set()))}
           {menus.length === 0 ? <p className="sc-meta">No IVR menus on this domain</p> : null}
         </div>
       </section>
@@ -187,80 +302,52 @@ export function AdminIvr() {
                     </li>
                   );
                 })}
-                {digits.length === 0 ? <li className="sc-meta">No options</li> : null}
+                {digits.length === 0 ? <li className="sc-meta">No branches yet</li> : null}
               </ul>
+              {add.menu === m.ivr_menu_uuid ? (
+                <div className="mt-3 grid gap-2">
+                  <input
+                    className="sc-input"
+                    placeholder="Digit"
+                    value={add.digits}
+                    onChange={(e) => setAdd({ ...add, digits: e.target.value.replace(/\D/g, '').slice(0, 4) })}
+                  />
+                  {destSelect(add.param, (param) => setAdd({ ...add, param, submenu: '' }))}
+                  <input
+                    className="sc-input"
+                    placeholder="Or branch to a new submenu"
+                    value={add.submenu}
+                    onChange={(e) => setAdd({ ...add, submenu: e.target.value, param: '' })}
+                  />
+                  <button
+                    type="button"
+                    className="sc-btn"
+                    onClick={() =>
+                      void run(async () => {
+                        await save('ivr_option_save', {
+                          ivr_menu_uuid: m.ivr_menu_uuid,
+                          digits: add.digits,
+                          action: 'menu-exec-app',
+                          param: add.param,
+                          new_submenu: add.submenu.trim(),
+                        });
+                        setAdd({ menu: '', digits: '', param: '', submenu: '' });
+                      })
+                    }
+                  >
+                    Save branch
+                  </button>
+                </div>
+              ) : (
+                <button type="button" className="sc-b2 mt-3" onClick={() => setAdd({ menu: m.ivr_menu_uuid, digits: '', param: '', submenu: '' })}>
+                  Branch out
+                </button>
+              )}
             </div>
           );
         })}
         {menus.length === 0 ? <p className="sc-meta">No IVR menus on this domain</p> : null}
       </div>
-      {menus.length > 0 ? (
-        <section className="sc-card">
-          <h2 className="mb-3 text-[16px] font-bold">Add digit</h2>
-          <div className="grid gap-2 sm:grid-cols-3">
-            <select className="sc-input" value={add.menu} onChange={(e) => setAdd({ ...add, menu: e.target.value })}>
-              <option value="">Menu…</option>
-              {menus.map((m) => (
-                <option key={m.ivr_menu_uuid} value={m.ivr_menu_uuid}>
-                  {m.ivr_menu_name}
-                </option>
-              ))}
-            </select>
-            <input
-              className="sc-input"
-              placeholder="Digit"
-              value={add.digits}
-              onChange={(e) => setAdd({ ...add, digits: e.target.value })}
-            />
-            <select
-              className="sc-input"
-              onChange={(e) => {
-                if (e.target.value) setAdd({ ...add, param: e.target.value });
-              }}
-            >
-              <option value="">Pick destination…</option>
-              {(data?.queues || []).map((q) => (
-                <option key={q.call_center_queue_uuid} value={destParam('queue', String(q.queue_extension || ''))}>
-                  Queue {q.queue_name} ({q.queue_extension})
-                </option>
-              ))}
-              {menus.map((m) => (
-                <option key={m.ivr_menu_uuid} value={destParam('ivr', String(m.ivr_menu_extension || ''))}>
-                  IVR {m.ivr_menu_name} ({m.ivr_menu_extension})
-                </option>
-              ))}
-              {(data?.flows || []).map((f: { call_flow_uuid?: string; call_flow_name?: string; call_flow_extension?: string }) => (
-                <option key={f.call_flow_uuid} value={destParam('flow', String(f.call_flow_extension || ''))}>
-                  Flow {f.call_flow_name} ({f.call_flow_extension})
-                </option>
-              ))}
-            </select>
-            <input
-              className="sc-input sm:col-span-3"
-              placeholder="Or type dest param (transfer 900 XML ${domain_name})"
-              value={add.param}
-              onChange={(e) => setAdd({ ...add, param: e.target.value })}
-            />
-          </div>
-          <button
-            type="button"
-            className="sc-btn mt-3"
-            onClick={() =>
-              void run(async () => {
-                await save('ivr_option_save', {
-                  ivr_menu_uuid: add.menu,
-                  digits: add.digits,
-                  action: 'menu-exec-app',
-                  param: add.param,
-                });
-                setAdd({ menu: add.menu, digits: '', param: add.param });
-              })
-            }
-          >
-            Add option
-          </button>
-        </section>
-      ) : null}
     </StudioPage>
   );
 }
@@ -394,7 +481,7 @@ export function AdminQueues() {
   const { data, err, save } = useStudio();
   const [msg, setMsg] = useState('');
   const [moh, setMoh] = useState<Record<string, string>>({});
-  const [create, setCreate] = useState({ name: '', extension: '', strategy: 'longest-idle-agent' });
+  const [create, setCreate] = useState({ name: '', extension: '', strategy: 'longest-idle-agent', skill: '' });
   const run = async (fn: () => Promise<void>) => {
     setMsg('');
     try {
@@ -408,7 +495,7 @@ export function AdminQueues() {
     <StudioPage
       title="Routing and queues"
       path="/admin/queues"
-      blurb="Ticked staff write the inbound hunt list. Leave all unchecked to ring every Ready agent."
+      blurb="Set a required skill so only matching agents ring. Or tick staff by hand when the queue has no skill."
     >
       {err ? <p className="text-sm text-[var(--color-sc-warn)]">{err}</p> : null}
       {msg ? <p className="text-sm font-bold">{msg}</p> : null}
@@ -438,6 +525,18 @@ export function AdminQueues() {
               </option>
             ))}
           </select>
+          <select
+            className="sc-input sm:col-span-3"
+            value={create.skill}
+            onChange={(e) => setCreate({ ...create, skill: e.target.value })}
+          >
+            <option value="">No required skill (manual staff)</option>
+            {(data?.skills || []).map((s) => (
+              <option key={s.skill_key} value={s.skill_key}>
+                Skill: {s.label}
+              </option>
+            ))}
+          </select>
         </div>
         <button
           type="button"
@@ -449,8 +548,9 @@ export function AdminQueues() {
                 queue_extension: create.extension,
                 queue_strategy: create.strategy,
                 queue_moh_sound: 'local_stream://default',
+                required_skill: create.skill,
               });
-              setCreate({ name: '', extension: '', strategy: 'longest-idle-agent' });
+              setCreate({ name: '', extension: '', strategy: 'longest-idle-agent', skill: '' });
             })
           }
         >
@@ -465,6 +565,7 @@ export function AdminQueues() {
               <th className="px-3 py-2">Ext</th>
               <th className="px-3 py-2">Strategy</th>
               <th className="px-3 py-2">MOH</th>
+              <th className="px-3 py-2">Required skill</th>
               <th className="px-3 py-2">Staff</th>
               <th className="px-3 py-2" />
             </tr>
@@ -504,6 +605,30 @@ export function AdminQueues() {
                       value={moh[id] ?? q.queue_moh_sound ?? ''}
                       onChange={(e) => setMoh({ ...moh, [id]: e.target.value })}
                     />
+                  </td>
+                  <td className="px-3 py-2.5 align-top">
+                    <select
+                      className="sc-input"
+                      value={q.required_skill || ''}
+                      onChange={(e) =>
+                        void run(() =>
+                          save('queue_save', {
+                            call_center_queue_uuid: q.call_center_queue_uuid,
+                            queue_name: q.queue_name,
+                            queue_strategy: q.queue_strategy,
+                            queue_moh_sound: moh[id] ?? q.queue_moh_sound ?? '',
+                            required_skill: e.target.value,
+                          }),
+                        )
+                      }
+                    >
+                      <option value="">None (manual)</option>
+                      {(data?.skills || []).map((s) => (
+                        <option key={s.skill_key} value={s.skill_key}>
+                          {s.label}
+                        </option>
+                      ))}
+                    </select>
                   </td>
                   <td className="px-3 py-2.5 align-top">
                     <div className="flex max-h-36 flex-col gap-1 overflow-y-auto">
@@ -573,7 +698,7 @@ export function AdminQueues() {
             })}
             {(data?.queues || []).length === 0 ? (
               <tr>
-                <td colSpan={6} className="px-3 py-6 text-[var(--color-sc-muted)]">
+                <td colSpan={7} className="px-3 py-6 text-[var(--color-sc-muted)]">
                   No queues
                 </td>
               </tr>
@@ -841,6 +966,12 @@ export function AdminSettings() {
     }
   }, [data]);
   const [msg, setMsg] = useState('');
+  const [ai, setAi] = useState<{ ok?: boolean; error?: string; base?: string } | null>(null);
+  useEffect(() => {
+    fetchAiHealth()
+      .then(setAi)
+      .catch((e) => setAi({ ok: false, error: e instanceof Error ? e.message : 'AI check failed' }));
+  }, []);
   const persist = async () => {
     setMsg('');
     try {
@@ -867,6 +998,18 @@ export function AdminSettings() {
             Save
           </button>
           {msg ? <p className="mt-2 text-sm font-bold">{msg}</p> : null}
+        </section>
+        <section className="sc-card">
+          <h2 className="mb-3 text-[16px] font-bold">SkyKin AI</h2>
+          <p className="text-sm">
+            {ai == null ? 'Checking…' : ai.ok ? `Reachable · ${ai.base || 'ok'}` : ai.error || 'Not reachable'}
+          </p>
+          <p className="sc-meta mt-2">
+            Captions and evaluation need the AI service on port 8100 of this host (listen on 0.0.0.0, not only localhost).
+          </p>
+          <button type="button" className="sc-btn mt-3" onClick={() => void fetchAiHealth().then(setAi)}>
+            Recheck
+          </button>
         </section>
         <section className="sc-card">
           <h2 className="mb-3 text-[16px] font-bold">Tenant</h2>

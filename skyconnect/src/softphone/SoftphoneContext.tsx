@@ -26,9 +26,14 @@ import {
   stopRingtone,
 } from '../lib/callTones';
 import {
+  applyAudioContextSink,
+  applySpeakerSink,
+  bindHeadsetButtons,
+  micConstraints,
+} from '../lib/headset';
+import {
   ICE_GATHERING_TIMEOUT_MS,
   ICE_PC_CONFIG,
-  MIC_CONSTRAINTS,
   SDP_MODIFIERS,
   webAudioSessionDescriptionHandlerFactory,
 } from '../lib/sipMedia';
@@ -83,6 +88,7 @@ type SoftphoneApi = {
   clearLastRemoteNumber: () => void;
   getCallAudio: () => CallAudioStreams;
   sendDtmf: (tone: string) => void;
+  applyHeadsetAudio: () => void;
 };
 
 const HOLD_MODIFIER = (desc: RTCSessionDescriptionInit) => {
@@ -207,6 +213,7 @@ export function SoftphoneProvider({ children }: { children: ReactNode }) {
     }
     el.muted = false;
     el.volume = 1;
+    void applySpeakerSink(el);
     return el;
   }, []);
 
@@ -230,6 +237,7 @@ export function SoftphoneProvider({ children }: { children: ReactNode }) {
         el.srcObject = playable;
         el.muted = false;
         el.volume = 1;
+        void applySpeakerSink(el);
         void el.play().catch(() => {});
       };
       const pc = sdh?.peerConnection;
@@ -266,6 +274,8 @@ export function SoftphoneProvider({ children }: { children: ReactNode }) {
       }
       const el = ensureRemoteAudioEl();
       el.srcObject = dest.stream;
+      void applySpeakerSink(el);
+      void applyAudioContextSink(ctx);
       el.play().catch(() => {});
     },
     [ensureRemoteAudioEl],
@@ -546,7 +556,7 @@ export function SoftphoneProvider({ children }: { children: ReactNode }) {
       }
 
       try {
-        await navigator.mediaDevices.getUserMedia(MIC_CONSTRAINTS);
+        await navigator.mediaDevices.getUserMedia(micConstraints());
       } catch {
         setPhase('failed');
         setStatusLabel('Microphone permission required');
@@ -558,7 +568,7 @@ export function SoftphoneProvider({ children }: { children: ReactNode }) {
 
       const inv = new Inviter(ua, target, {
         sessionDescriptionHandlerOptions: {
-          constraints: MIC_CONSTRAINTS,
+          constraints: micConstraints(),
           iceGatheringTimeout: ICE_GATHERING_TIMEOUT_MS,
           peerConnectionConfiguration: ICE_PC_CONFIG,
         },
@@ -588,10 +598,10 @@ export function SoftphoneProvider({ children }: { children: ReactNode }) {
     if (!(session instanceof Invitation)) return;
     stopRingtone();
     try {
-      await navigator.mediaDevices.getUserMedia(MIC_CONSTRAINTS);
+      await navigator.mediaDevices.getUserMedia(micConstraints());
       await session.accept({
         sessionDescriptionHandlerOptions: {
-          constraints: MIC_CONSTRAINTS,
+          constraints: micConstraints(),
           iceGatheringTimeout: ICE_GATHERING_TIMEOUT_MS,
           peerConnectionConfiguration: ICE_PC_CONFIG,
         },
@@ -749,7 +759,7 @@ export function SoftphoneProvider({ children }: { children: ReactNode }) {
 
         const inv = new Inviter(ua, target, {
           sessionDescriptionHandlerOptions: {
-            constraints: MIC_CONSTRAINTS,
+            constraints: micConstraints(),
             iceGatheringTimeout: ICE_GATHERING_TIMEOUT_MS,
             peerConnectionConfiguration: ICE_PC_CONFIG,
           },
@@ -841,6 +851,15 @@ export function SoftphoneProvider({ children }: { children: ReactNode }) {
     setMuted(next);
   }, [muted]);
 
+  const applyHeadsetAudio = useCallback(() => {
+    void applySpeakerSink(remoteAudioRef.current);
+    try {
+      void applyAudioContextSink(Web.WebAudioSessionDescriptionHandler.audioContext);
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
   const toggleHold = useCallback(async () => {
     const session = sessionRef.current;
     if (!session || session.state !== SessionState.Established) return;
@@ -855,6 +874,27 @@ export function SoftphoneProvider({ children }: { children: ReactNode }) {
       /* hold optional */
     }
   }, [inConference, onHold]);
+
+  const phaseRef = useRef(phase);
+  phaseRef.current = phase;
+  const answerRef = useRef(answer);
+  answerRef.current = answer;
+  const hangupRef = useRef(hangup);
+  hangupRef.current = hangup;
+  const muteRef = useRef(toggleMute);
+  muteRef.current = toggleMute;
+
+  useEffect(
+    () =>
+      bindHeadsetButtons({
+        ringing: () => phaseRef.current === 'ringing',
+        inCall: () => phaseRef.current === 'in_call' || phaseRef.current === 'calling',
+        answer: () => void answerRef.current(),
+        hangup: () => hangupRef.current(),
+        toggleMute: () => muteRef.current(),
+      }),
+    [],
+  );
 
   // Load SIP creds from FusionPBX login session (same source as old dashboard)
   useEffect(() => {
@@ -930,6 +970,7 @@ export function SoftphoneProvider({ children }: { children: ReactNode }) {
       clearLastRemoteNumber,
       getCallAudio,
       sendDtmf,
+      applyHeadsetAudio,
     }),
     [
       phase,
@@ -956,6 +997,7 @@ export function SoftphoneProvider({ children }: { children: ReactNode }) {
       clearLastRemoteNumber,
       getCallAudio,
       sendDtmf,
+      applyHeadsetAudio,
     ],
   );
 

@@ -45,6 +45,9 @@ function xlsxColumn(int $number): string {
 
 // ── JSON API endpoints ───────────────────────────────────────────────────────
 if (isset($_GET['api'])) {
+    if (function_exists('session_write_close')) {
+        session_write_close();
+    }
     error_reporting(0);
     header('Content-Type: application/json');
     $api    = $_GET['api'];

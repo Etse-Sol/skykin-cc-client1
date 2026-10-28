@@ -4,13 +4,14 @@ import {
   fetchAgentPerformance,
   fetchCallList,
   fetchHourlyVolume,
+  fetchQueueSla,
   fetchReportSummary,
   opsGet,
   type ReportSummary,
 } from '../../services/ops';
 import { fmtHms, fmtSec } from '../../services/supervisorApi';
 
-type Tab = 'kpi' | 'hourly' | 'reasons' | 'agents';
+type Tab = 'kpi' | 'hourly' | 'queues' | 'reasons' | 'agents';
 
 export default function Reports() {
   const [tab, setTab] = useState<Tab>('hourly');
@@ -28,6 +29,7 @@ export default function Reports() {
   const [perf, setPerf] = useState<any[]>([]);
   const [reasons, setReasons] = useState<{ reason: string; calls: number }[]>([]);
   const [calls, setCalls] = useState<any[]>([]);
+  const [queues, setQueues] = useState<any[]>([]);
   const [q, setQ] = useState('');
   const [err, setErr] = useState('');
 
@@ -36,18 +38,20 @@ export default function Reports() {
       try {
         const s = await fetchAgentSession();
         const dom = domain || s.domain;
-        const [summary, hv, agents, rs, list] = await Promise.all([
+        const [summary, hv, agents, rs, list, slaRows] = await Promise.all([
           fetchReportSummary(dom, from, to),
           fetchHourlyVolume(dom, from, to),
           fetchAgentPerformance(dom, from, to),
           opsGet('reasons', { domain: dom }).catch(() => ({ reasons: [] })),
           fetchCallList(dom, from, to),
+          fetchQueueSla(dom, from, to).catch(() => []),
         ]);
         setSum(summary);
         setHourly(Array.isArray(hv) ? hv : []);
         setPerf(agents);
         setReasons(Array.isArray(rs.reasons) ? rs.reasons : []);
         setCalls(list);
+        setQueues(Array.isArray(slaRows) ? slaRows : []);
         setErr('');
       } catch (e) {
         setErr(e instanceof Error ? e.message : 'Reports failed');
@@ -61,6 +65,8 @@ export default function Reports() {
   const hangPct = total ? ((abandoned / total) * 100).toFixed(2) : '0';
   const xferPct = total ? ((answered / total) * 100).toFixed(2) : '0';
   const aht = Number(sum?.avg_talk ?? 0);
+  const asa = Number(sum?.avg_wait ?? 0);
+  const slaPct = Number(sum?.sla ?? 0);
   const exportUrl = `/app/agent_dashboard/reports.php?api=export_excel&domain=${encodeURIComponent(domain)}&from=${from}&to=${to}`;
 
   const hoursDesc = useMemo(
@@ -110,6 +116,7 @@ export default function Reports() {
             [
               ['kpi', 'Summary KPI'],
               ['hourly', 'Hourly table'],
+              ['queues', 'Queue SLA'],
               ['reasons', 'Call reasons'],
               ['agents', 'By agent'],
             ] as const
@@ -126,7 +133,7 @@ export default function Reports() {
         </div>
 
         {tab === 'kpi' ? (
-          <div className="mt-4 grid gap-3 sm:grid-cols-4">
+          <div className="mt-4 grid gap-3 sm:grid-cols-5">
             {[
               ['Total calls', String(total)],
               ['Answered / transferred', String(answered)],
@@ -134,6 +141,8 @@ export default function Reports() {
               ['Hang-up %', hangPct],
               ['Transfer %', xferPct],
               ['Answered AHT', fmtHms(aht)],
+              ['ASA', fmtHms(asa)],
+              ['SLA %', String(slaPct)],
               ['Inbound', String(sum?.inbound ?? '—')],
               ['Outbound', String(sum?.outbound ?? '—')],
             ].map(([k, v]) => (
@@ -244,6 +253,38 @@ export default function Reports() {
                 </tbody>
               </table>
             </div>
+          </div>
+        ) : null}
+
+        {tab === 'queues' ? (
+          <div className="mt-4 overflow-x-auto">
+            <table className="w-full text-left text-sm">
+              <thead className="text-[11px] uppercase text-[var(--color-sc-muted)]">
+                <tr>
+                  <th className="px-2 py-2">Queue</th>
+                  <th className="px-2 py-2 text-right">Offered</th>
+                  <th className="px-2 py-2 text-right">Answered</th>
+                  <th className="px-2 py-2 text-right">Answer %</th>
+                  <th className="px-2 py-2 text-right">AHT</th>
+                </tr>
+              </thead>
+              <tbody>
+                {queues.map((row) => {
+                  const tot = Number(row.total || 0);
+                  const ans = Number(row.answered || 0);
+                  return (
+                    <tr key={String(row.queue_num)} className="border-t border-[var(--color-sc-line)]">
+                      <td className="px-2 py-2 font-bold">{row.queue_num}</td>
+                      <td className="px-2 py-2 text-right tabular-nums">{tot}</td>
+                      <td className="px-2 py-2 text-right tabular-nums">{ans}</td>
+                      <td className="px-2 py-2 text-right tabular-nums">{tot ? ((ans / tot) * 100).toFixed(1) : '0'}%</td>
+                      <td className="px-2 py-2 text-right tabular-nums">{fmtHms(Number(row.avg_dur || 0))}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+            {!queues.length ? <p className="sc-meta mt-3">No queue traffic in this range.</p> : null}
           </div>
         ) : null}
 

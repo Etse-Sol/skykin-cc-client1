@@ -49,11 +49,15 @@ export function useLiveTranscript(opts: {
   const [callerHint, setCallerHint] = useState('');
   const mrsRef = useRef<MediaRecorder[]>([]);
   const clonesRef = useRef<MediaStream[]>([]);
+  const timersRef = useRef<number[]>([]);
+  const runIdRef = useRef(0);
   const callerOffRef = useRef(false);
   const listRef = useRef<HTMLDivElement | null>(null);
   const wasActiveRef = useRef(false);
   const mutedRef = useRef(muted);
   mutedRef.current = muted;
+  const langRef = useRef(lang);
+  langRef.current = lang;
 
   const pushLine = useCallback((speaker: 'you' | 'caller', text: string) => {
     const t = text.replace(/\s+/g, ' ').trim();
@@ -70,6 +74,9 @@ export function useLiveTranscript(opts: {
   }, []);
 
   const stopAll = useCallback(() => {
+    runIdRef.current += 1;
+    for (const t of timersRef.current) window.clearTimeout(t);
+    timersRef.current = [];
     for (const mr of mrsRef.current) {
       try {
         if (mr.state !== 'inactive') mr.stop();
@@ -99,42 +106,59 @@ export function useLiveTranscript(opts: {
         return false;
       }
       const mime = pickRecorderMime();
-      let mr: MediaRecorder;
-      try {
-        mr = mime ? new MediaRecorder(cloned, { mimeType: mime }) : new MediaRecorder(cloned);
-      } catch {
-        cloned.getTracks().forEach((t) => t.stop());
-        return false;
-      }
       clonesRef.current.push(cloned);
-      mrsRef.current.push(mr);
-      mr.ondataavailable = (ev) => {
-        if (!ev.data || ev.data.size < 800 || callerOffRef.current) return;
-        transcribeLiveChunk(ev.data, lang)
-          .then((text) => {
-            if (text) {
-              pushLine(speaker, text);
-              setCallerHint('');
-            }
-          })
-          .catch((e: Error) => {
-            const msg = String(e?.message || e);
-            if (/too short|empty transcript/i.test(msg)) return;
-            if (msg.includes('ai_off')) {
-              setCallerHint('Caption AI is off on the server.');
-              return;
-            }
-            setCallerHint(`Caption service: ${msg.slice(0, 140)}`);
-          });
+      const runId = runIdRef.current;
+      const recOne = () => {
+        if (runId !== runIdRef.current || callerOffRef.current) return;
+        if (speaker === 'you' && mutedRef.current) {
+          timersRef.current.push(window.setTimeout(recOne, 400));
+          return;
+        }
+        let mr: MediaRecorder;
+        try {
+          mr = mime ? new MediaRecorder(cloned, { mimeType: mime }) : new MediaRecorder(cloned);
+        } catch {
+          return;
+        }
+        mrsRef.current.push(mr);
+        mr.ondataavailable = (ev) => {
+          if (!ev.data || ev.data.size < 800 || callerOffRef.current) return;
+          transcribeLiveChunk(ev.data, langRef.current)
+            .then((text) => {
+              if (text) {
+                pushLine(speaker, text);
+                setCallerHint('');
+              }
+            })
+            .catch((e: Error) => {
+              const msg = String(e?.message || e);
+              if (/too short|empty transcript/i.test(msg)) return;
+              if (msg.includes('ai_off')) {
+                setCallerHint('Caption AI is off on the server.');
+                return;
+              }
+              setCallerHint(`Caption service: ${msg.slice(0, 140)}`);
+            });
+        };
+        mr.onstop = () => {
+          mrsRef.current = mrsRef.current.filter((row) => row !== mr);
+          if (runId === runIdRef.current && !callerOffRef.current) recOne();
+        };
+        try {
+          mr.start();
+          timersRef.current.push(
+            window.setTimeout(() => {
+              if (mr.state === 'recording') mr.stop();
+            }, 2000),
+          );
+        } catch {
+          /* ignore */
+        }
       };
-      try {
-        mr.start(2000);
-        return true;
-      } catch {
-        return false;
-      }
+      recOne();
+      return true;
     },
-    [lang, pushLine],
+    [pushLine],
   );
 
   useEffect(() => {

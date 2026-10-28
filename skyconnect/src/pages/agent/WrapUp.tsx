@@ -1,21 +1,8 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { saveWrapUp } from '../../services/api';
+import { guessWrapFromTranscript, REASON_TREE } from '../../lib/wrapReason';
 import { addJourneyEvent, saveCase } from '../../services/crm';
 import { useSoftphone } from '../../softphone/SoftphoneContext';
-
-type Tree = Record<string, Record<string, string[]>>;
-
-const tree: Tree = {
-  'Service request': {
-    'SIM and identity': ['SIM swap', 'Lost or stolen phone', 'Fayda verification'],
-    telebirr: ['Wrong transfer', 'PIN reset', 'Limit inquiry'],
-  },
-  'Fault and complaint': {
-    Network: ['No service', 'Slow data'],
-    Billing: ['Unexpected charge', 'Package dispute'],
-  },
-};
 
 export default function WrapUp() {
   const navigate = useNavigate();
@@ -27,6 +14,8 @@ export default function WrapUp() {
   const [notes, setNotes] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [hint, setHint] = useState('');
+  const autoRan = useRef(false);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({
     'Service request': true,
     'Fault and complaint': false,
@@ -42,72 +31,93 @@ export default function WrapUp() {
   const toggle = (key: string) =>
     setExpanded((prev) => ({ ...prev, [key]: !prev[key] }));
 
-  const onSave = async () => {
+  const persist = async (path: string, outc: string, note: string) => {
     const ext = phone.creds.extension;
-    if (!ext) {
-      setError('No extension — cannot save wrap-up');
+    if (!ext) throw new Error('No extension — cannot save wrap-up');
+    if (!path) throw new Error('Select a call reason');
+    const customerPhone = (phone.remoteNumber || phone.lastRemoteNumber || '').trim();
+    if (!customerPhone) {
+      throw new Error('No customer number from the call — journey not linked. Search Customers by that phone.');
+    }
+    const summary = note.trim() ? `${path} · ${outc} — ${note.trim()}`.slice(0, 200) : `${path} · ${outc}`;
+    try {
+      const q = JSON.parse(sessionStorage.getItem('sc_wrap_queue') || '[]');
+      q.unshift({
+        phone: customerPhone,
+        reason: path,
+        outcome: outc,
+        notes: note,
+        agent_id: ext,
+        at: Date.now(),
+      });
+      sessionStorage.setItem('sc_wrap_queue', JSON.stringify(q.slice(0, 40)));
+    } catch {
+      /* ignore */
+    }
+    void addJourneyEvent({ phone: customerPhone, channel: 'Voice', summary }).catch(() => {});
+    void saveCase({
+      phone: customerPhone,
+      reason: path,
+      outcome: outc,
+      notes: note.trim(),
+      agent_id: ext,
+    }).catch(() => {});
+    phone.clearLastRemoteNumber();
+    navigate(`/agent/customers?phone=${encodeURIComponent(customerPhone)}`);
+  };
+
+  useEffect(() => {
+    if (autoRan.current) return;
+    if (!phone.creds.extension) return;
+    let pending = '';
+    let tr = '';
+    try {
+      pending = sessionStorage.getItem('sc_wrap_pending') || '';
+      tr = sessionStorage.getItem('sc_last_transcript') || '';
+    } catch {
       return;
     }
-    if (!selectedPath) {
-      setError('Select a call reason');
+    if (pending !== '1') return;
+    autoRan.current = true;
+    try {
+      sessionStorage.removeItem('sc_wrap_pending');
+    } catch {
+      /* ignore */
+    }
+    const g = guessWrapFromTranscript(tr);
+    if (!g) {
+      setHint(
+        tr.trim()
+          ? 'Captions did not match a reason — pick one, then Save and close.'
+          : 'No live captions on that call — pick a reason, then Save and close.',
+      );
       return;
     }
+    const outc = g.outcome === 'Follow-up' ? 'Follow-up' : g.outcome === 'Escalated' ? 'Escalated' : 'Resolved';
+    setL1(g.l1);
+    setL2(g.l2);
+    setL3(g.l3);
+    setOutcome(outc);
+    setNotes(g.notes);
+    setExpanded((p) => ({ ...p, [g.l1]: true, [g.l2]: true }));
+    setHint('Filled from live captions — saving wrap-up.');
+    setSaving(true);
+    void persist(g.path, outc, g.notes)
+      .catch((e) => {
+        setError(e instanceof Error ? e.message : 'Auto-save failed — review and save.');
+        setHint('Reason was filled from captions. Check it, then Save and close.');
+      })
+      .finally(() => setSaving(false));
+  }, [phone.creds.extension]);
+
+  const onSave = async () => {
     setSaving(true);
     setError('');
     try {
-      await saveWrapUp({
-        extension: ext,
-        reason: selectedPath,
-        outcome,
-        notes,
-      });
-      // Number survives hangup via lastRemoteNumber (live board clears remoteNumber)
-      const customerPhone = (phone.remoteNumber || phone.lastRemoteNumber || '').trim();
-      if (customerPhone) {
-        // Full call-reason path on the Customer 360 track (not hangup status)
-        const summary = notes.trim()
-          ? `${selectedPath} · ${outcome} — ${notes.trim()}`.slice(0, 200)
-          : `${selectedPath} · ${outcome}`;
-        try {
-          await addJourneyEvent({
-            phone: customerPhone,
-            channel: 'Voice',
-            summary,
-          });
-        } catch (je) {
-          setError(
-            je instanceof Error
-              ? `Reason saved, but journey failed: ${je.message}`
-              : 'Reason saved, but journey failed — redeploy crm.php',
-          );
-          setSaving(false);
-          return;
-        }
-        // Case row: reason + status (from outcome) for Cases page / Customer 360
-        try {
-          await saveCase({
-            phone: customerPhone,
-            reason: selectedPath,
-            outcome,
-            notes: notes.trim(),
-            agent_id: ext,
-          });
-        } catch (ce) {
-          setError(
-            ce instanceof Error
-              ? `Journey saved, but case failed: ${ce.message}`
-              : 'Journey saved, but case failed — redeploy crm.php',
-          );
-          setSaving(false);
-          return;
-        }
-        phone.clearLastRemoteNumber();
-        navigate(`/agent/customers?phone=${encodeURIComponent(customerPhone)}`);
-        return;
-      }
-      setError('No customer number from the call — journey not linked. Search Customers by that phone.');
+      await persist(selectedPath, outcome, notes);
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Save failed — check Go API');
+      const msg = e instanceof Error ? e.message : 'Save failed';
+      setError(/timeout|timed out|abort/i.test(msg) ? 'Customer save timed out. Click Save and close again.' : msg);
     } finally {
       setSaving(false);
     }
@@ -130,7 +140,7 @@ export default function WrapUp() {
         )}
 
         <ul className="space-y-1 text-sm text-[var(--color-sc-ink)]">
-          {Object.entries(tree).map(([cat, subs]) => {
+          {Object.entries(REASON_TREE).map(([cat, subs]) => {
             const catOpen = expanded[cat] !== false;
             return (
               <li key={cat}>
@@ -239,6 +249,7 @@ export default function WrapUp() {
           onChange={(e) => setNotes(e.target.value)}
         />
 
+        {hint ? <p className="mt-3 text-sm font-semibold text-[var(--color-sc-forest)]">{hint}</p> : null}
         {error ? (
           <p className="mt-3 text-sm font-semibold text-[var(--color-sc-warn)]">{error}</p>
         ) : null}
