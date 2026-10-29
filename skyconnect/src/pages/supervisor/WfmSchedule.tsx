@@ -69,6 +69,7 @@ export default function WfmSchedule() {
   const [domain, setDomain] = useState('');
   const [waiting, setWaiting] = useState(0);
   const [perf, setPerf] = useState({ inbound: 0, answered: 0, missed: 0, abandoned: 0, avgTalk: 0, sla: 0 });
+  const [forecast, setForecast] = useState<{ hour: number; offered: number; agents_needed: number }[]>([]);
 
   const applyPack = (data: any) => {
     setShifts(Array.isArray(data.shifts) ? data.shifts : []);
@@ -80,11 +81,12 @@ export default function WfmSchedule() {
     const s = await fetchAgentSession();
     setDomain(s.domain);
     const { from, to } = todayRange();
-    const [ags, wfm, q, sm] = await Promise.all([
+    const [ags, wfm, q, sm, fc] = await Promise.all([
       fetchSupAgents(s.domain),
       opsGet('wfm', { domain: s.domain }),
       fetchSupQueue(s.domain).catch(() => null),
       fetchReportSummary(s.domain, from, to).catch(() => ({})),
+      opsGet('wfm_forecast', { domain: s.domain }).catch(() => ({ hours: [] })),
     ]);
     setAgents(ags);
     applyPack(wfm);
@@ -104,6 +106,7 @@ export default function WfmSchedule() {
       avgTalk: Number(sm.avg_talk ?? q?.avg_talk ?? 0),
       sla: inbound > 0 ? Math.round((answered / inbound) * 100) : Number(q?.sla ?? 0),
     });
+    setForecast(Array.isArray(fc.hours) ? fc.hours : []);
     setErr('');
   }, []);
 
@@ -135,6 +138,28 @@ export default function WfmSchedule() {
   const jsDow = new Date().getDay();
   const todayDow = jsDow === 0 ? 7 : jsDow;
   const todayYmd = new Date().toISOString().slice(0, 10);
+  const nowMins = new Date().getHours() * 60 + new Date().getMinutes();
+  const dutyNow = (a: SupAgent) => {
+    const asg = asgByExt[a.ext];
+    const sh = asg ? shiftById[String(asg.shift_id)] : undefined;
+    const woff = !asg || String(asg.weekend_off) !== 'false';
+    const c = cellFor(sh, woff, holidayMap, todayDow, todayYmd);
+    if (c.off || !sh) return false;
+    const [hs, ms] = String(sh.start_hm || '08:00').split(':').map((x) => parseInt(x, 10) || 0);
+    const [he, me] = String(sh.end_hm || '16:00').split(':').map((x) => parseInt(x, 10) || 0);
+    let a0 = hs * 60 + ms;
+    let b0 = he * 60 + me;
+    if (b0 <= a0) b0 += 24 * 60;
+    const n = nowMins < a0 ? nowMins + 24 * 60 : nowMins;
+    return n >= a0 && n < b0;
+  };
+  const shouldBeOn = agents.filter(dutyNow);
+  const actuallyOn = shouldBeOn.filter((a) => {
+    const st = (a.status || '').toLowerCase();
+    return a.registered && st !== 'offline' && st !== 'logged_out';
+  });
+  const adherePct = shouldBeOn.length ? Math.round((actuallyOn.length / shouldBeOn.length) * 100) : 0;
+  const hourNeed = forecast.find((h) => h.hour === new Date().getHours())?.agents_needed ?? 0;
   const scheduled = agents.filter((a) => {
     const asg = asgByExt[a.ext];
     const sh = asg ? shiftById[String(asg.shift_id)] : undefined;
@@ -192,13 +217,16 @@ export default function WfmSchedule() {
       <section className="sc-card">
         <h2 className="text-[16px] font-bold">Intraday</h2>
         <p className="sc-meta mt-1">Live online count versus today&apos;s actual performance</p>
-        <div className="mt-3 grid gap-3 sm:grid-cols-4 lg:grid-cols-8">
+        <div className="mt-3 grid gap-3 sm:grid-cols-4 lg:grid-cols-6">
           {[
             ['Online now', String(floor.online)],
             ['Ready', String(floor.ready)],
             ['On call', String(floor.onCall)],
             ['On break', String(floor.onBreak)],
             ['Scheduled today', String(scheduled)],
+            ['On duty now', String(shouldBeOn.length)],
+            ['Adherence', `${adherePct}%`],
+            ['Staff needed now', String(hourNeed)],
             ['In queue', String(waiting)],
             ['Answered', String(perf.answered)],
             ['SLA', `${perf.sla || 0}%`],
@@ -211,8 +239,29 @@ export default function WfmSchedule() {
         </div>
         <p className="sc-meta mt-3">
           Missed {perf.missed} · abandoned {perf.abandoned} · inbound {perf.inbound} · avg talk {fmtSec(perf.avgTalk)} ·{' '}
-          {floor.online} of {scheduled || floor.total} scheduled are online
+          {actuallyOn.length} of {shouldBeOn.length || scheduled || floor.total} on-shift are online ({adherePct}%
+          adherence)
         </p>
+        <div className="mt-3 overflow-x-auto">
+          <table className="w-full min-w-[640px] text-left text-sm">
+            <thead className="text-[11px] uppercase text-[var(--color-sc-muted)]">
+              <tr>
+                <th className="px-2 py-1">Hour</th>
+                <th className="px-2 py-1 text-right">Forecast offered</th>
+                <th className="px-2 py-1 text-right">Agents needed</th>
+              </tr>
+            </thead>
+            <tbody>
+              {forecast.map((h) => (
+                <tr key={h.hour} className="border-t border-[var(--color-sc-line)]">
+                  <td className="px-2 py-1">{String(h.hour).padStart(2, '0')}:00</td>
+                  <td className="px-2 py-1 text-right tabular-nums">{h.offered}</td>
+                  <td className="px-2 py-1 text-right tabular-nums">{h.agents_needed}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
         <ul className="mt-3 grid gap-1 sm:grid-cols-2 lg:grid-cols-3">
           {agents.map((a) => (
             <li key={a.ext} className="flex items-center justify-between gap-2 text-sm">

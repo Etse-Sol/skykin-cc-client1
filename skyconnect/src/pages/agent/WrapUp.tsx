@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { guessWrapFromTranscript, REASON_TREE } from '../../lib/wrapReason';
 import { addJourneyEvent, saveCase } from '../../services/crm';
+import { opsPost } from '../../services/ops';
 import { useSoftphone } from '../../softphone/SoftphoneContext';
 
 export default function WrapUp() {
@@ -62,6 +63,11 @@ export default function WrapUp() {
       notes: note.trim(),
       agent_id: ext,
     }).catch(() => {});
+    void opsPost('survey_link', { agent_ext: ext, phone: customerPhone })
+      .then((r) => {
+        if (r?.path) sessionStorage.setItem('sc_csat_url', r.path);
+      })
+      .catch(() => {});
     phone.clearLastRemoteNumber();
     navigate(`/agent/customers?phone=${encodeURIComponent(customerPhone)}`);
   };

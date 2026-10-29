@@ -5,6 +5,7 @@
  */
 require_once __DIR__ . '/session_bootstrap.php';
 require_once __DIR__ . '/skykin_config.php';
+require_once __DIR__ . '/skyconnect_omni_lib.php';
 
 header('Content-Type: application/json; charset=utf-8');
 header('Cache-Control: no-store');
@@ -1364,6 +1365,100 @@ try {
 			]);
 		}
 		echo json_encode(array_merge(['ok' => true], sc_ops_wfm_pack($db, $dom)));
+		exit;
+	}
+
+	if ($op === 'wfm_forecast') {
+		sc_ops_need(['supervisor', 'admin', 'superadmin']);
+		echo json_encode(['ok' => true, 'hours' => sc_ops_wfm_forecast($db, $dom)]);
+		exit;
+	}
+
+	if ($op === 'omni_inbox') {
+		sc_omni_ensure($db);
+		$s = $db->prepare(
+			"SELECT * FROM skykin_omni_threads WHERE domain_name = :d AND status <> 'closed'
+			 ORDER BY updated_at DESC NULLS LAST, thread_id DESC LIMIT 80"
+		);
+		try {
+			$s->execute([':d' => $dom]);
+		} catch (Throwable $e) {
+			$s = $db->prepare(
+				"SELECT * FROM skykin_omni_threads WHERE domain_name = :d AND status <> 'closed'
+				 ORDER BY thread_id DESC LIMIT 80"
+			);
+			$s->execute([':d' => $dom]);
+		}
+		echo json_encode(['ok' => true, 'threads' => $s->fetchAll(PDO::FETCH_ASSOC)]);
+		exit;
+	}
+
+	if ($op === 'omni_thread') {
+		sc_omni_ensure($db);
+		$tid = (int)($_GET['thread_id'] ?? $body['thread_id'] ?? 0);
+		$s = $db->prepare('SELECT * FROM skykin_omni_threads WHERE thread_id = :id AND domain_name = :d');
+		$s->execute([':id' => $tid, ':d' => $dom]);
+		$th = $s->fetch(PDO::FETCH_ASSOC);
+		if (!$th) {
+			echo json_encode(['ok' => false, 'error' => 'Thread not found']);
+			exit;
+		}
+		echo json_encode(['ok' => true, 'thread' => $th, 'messages' => sc_omni_msgs($db, $tid)]);
+		exit;
+	}
+
+	if ($op === 'omni_claim' && ($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
+		sc_omni_ensure($db);
+		$tid = (int)($body['thread_id'] ?? 0);
+		$ext = trim((string)($body['agent_ext'] ?? $_SESSION['user_extension'] ?? $me));
+		$db->prepare("UPDATE skykin_omni_threads SET status='agent', agent_ext=:e WHERE thread_id=:id AND domain_name=:d")
+			->execute([':e' => $ext, ':id' => $tid, ':d' => $dom]);
+		echo json_encode(['ok' => true]);
+		exit;
+	}
+
+	if ($op === 'omni_reply' && ($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
+		sc_omni_ensure($db);
+		$tid = (int)($body['thread_id'] ?? 0);
+		$text = trim((string)($body['text'] ?? ''));
+		$ext = trim((string)($body['agent_ext'] ?? $me));
+		if ($tid < 1 || $text === '') {
+			echo json_encode(['ok' => false, 'error' => 'Message required']);
+			exit;
+		}
+		$s = $db->prepare('SELECT * FROM skykin_omni_threads WHERE thread_id = :id AND domain_name = :d');
+		$s->execute([':id' => $tid, ':d' => $dom]);
+		$th = $s->fetch(PDO::FETCH_ASSOC);
+		if (!$th) {
+			echo json_encode(['ok' => false, 'error' => 'Thread not found']);
+			exit;
+		}
+		if ((string)($th['agent_ext'] ?? '') === '') {
+			$db->prepare("UPDATE skykin_omni_threads SET status='agent', agent_ext=:e WHERE thread_id=:id")
+				->execute([':e' => $ext, ':id' => $tid]);
+		}
+		sc_omni_add_msg($db, $tid, 'agent', $text);
+		if ((string)($th['channel'] ?? '') === 'whatsapp') {
+			sc_omni_wa_send((string)$th['customer_key'], $text);
+		}
+		echo json_encode(['ok' => true, 'messages' => sc_omni_msgs($db, $tid)]);
+		exit;
+	}
+
+	if ($op === 'omni_close' && ($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
+		$tid = (int)($body['thread_id'] ?? 0);
+		$db->prepare("UPDATE skykin_omni_threads SET status='closed' WHERE thread_id=:id AND domain_name=:d")
+			->execute([':id' => $tid, ':d' => $dom]);
+		echo json_encode(['ok' => true]);
+		exit;
+	}
+
+	if ($op === 'survey_link' && ($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
+		$ext = trim((string)($body['agent_ext'] ?? $me));
+		$phone = trim((string)($body['phone'] ?? ''));
+		$token = sc_csat_make($db, $dom, $ext, $phone);
+		$path = '/app/agent_dashboard/skyconnect_omni.php?ui=csat&t=' . rawurlencode($token);
+		echo json_encode(['ok' => true, 'token' => $token, 'path' => $path]);
 		exit;
 	}
 

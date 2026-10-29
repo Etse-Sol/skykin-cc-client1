@@ -30,6 +30,7 @@ export default function Customer360() {
   const [newName, setNewName] = useState('');
   const [newPhone, setNewPhone] = useState('');
   const [saveMsg, setSaveMsg] = useState('');
+  const [csatPath, setCsatPath] = useState('');
 
   const openCustomer = useCallback(
     (ph: string) => {
@@ -47,6 +48,11 @@ export default function Customer360() {
 
   useEffect(() => {
     void flushWrapQueue();
+    try {
+      setCsatPath(sessionStorage.getItem('sc_csat_url') || '');
+    } catch {
+      /* ignore */
+    }
   }, []);
 
   useEffect(() => {
@@ -279,6 +285,14 @@ export default function Customer360() {
 
   return (
     <div className="mx-auto max-w-6xl">
+      {csatPath ? (
+        <p className="mb-3 rounded-lg border border-[var(--color-sc-line)] bg-white px-3 py-2 text-sm">
+          Post-call survey:{' '}
+          <a className="font-bold underline" href={csatPath} target="_blank" rel="noreferrer">
+            {csatPath}
+          </a>
+        </p>
+      ) : null}
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <div>
           <button

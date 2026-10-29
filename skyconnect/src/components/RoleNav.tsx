@@ -56,6 +56,7 @@ const agentNav: Item[] = [
       { to: '/agent/cases', label: 'Cases', icon: FolderKanban },
     ],
   },
+  { to: '/agent/inbox', label: 'Inbox', icon: MessageSquare },
   { to: '/agent/knowledge', label: 'Knowledge', icon: BookOpen },
   { to: '/agent/schedule', label: 'Schedule', icon: Calendar },
   { to: '/agent/learning', label: 'Learning', icon: GraduationCap },
@@ -71,6 +72,7 @@ const supervisorNav: Item[] = [
       { to: '/supervisor/floor', label: 'AI live floor', icon: Headphones },
       { to: '/supervisor/wallboard', label: 'Wallboard', icon: LayoutDashboard },
       { to: '/supervisor/dashboard', label: 'Dashboard', icon: PieChart },
+      { to: '/supervisor/inbox', label: 'Inbox', icon: MessageSquare },
     ],
   },
   {

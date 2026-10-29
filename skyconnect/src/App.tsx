@@ -13,6 +13,7 @@ import Cases from './pages/agent/Cases';
 import Knowledge from './pages/agent/Knowledge';
 import AgentSchedule from './pages/agent/Schedule';
 import AgentLearning from './pages/agent/Learning';
+import Inbox from './pages/agent/Inbox';
 import SupDashboard from './pages/supervisor/Dashboard';
 import Reports from './pages/supervisor/Reports';
 import Wallboard from './pages/supervisor/Wallboard';
@@ -55,6 +56,7 @@ export default function App() {
         <Route path="crm" element={<Crm />} />
         <Route path="consult" element={<Consult />} />
         <Route path="cases" element={<Cases />} />
+        <Route path="inbox" element={<Inbox />} />
         <Route path="knowledge" element={<Knowledge />} />
         <Route path="schedule" element={<AgentSchedule />} />
         <Route path="learning" element={<AgentLearning />} />
@@ -71,6 +73,7 @@ export default function App() {
         <Route path="evaluation" element={<Evaluation />} />
         <Route path="learning" element={<SupLearning />} />
         <Route path="surveys" element={<Surveys />} />
+        <Route path="inbox" element={<Inbox />} />
       </Route>
       <Route path="/admin" element={<AdminLayout />}>
         <Route index element={<Navigate to="console" replace />} />

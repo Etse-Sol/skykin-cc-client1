@@ -376,12 +376,23 @@ export function AdminChatbot() {
       setBusy(false);
     }
   };
+  const chatUrl = `${window.location.origin}/app/agent_dashboard/skyconnect_omni.php?ui=chat`;
+  const waUrl = `${window.location.origin}/app/agent_dashboard/skyconnect_omni.php?op=wa`;
   return (
     <StudioPage
       title="Chatbot studio"
       path="/admin/chatbot"
       blurb="Intents are Knowledge articles — author and test retrieval against the live KB"
     >
+      <section className="sc-card">
+        <h2 className="mb-2 text-[16px] font-bold">Live channels</h2>
+        <p className="text-sm">
+          Web widget: <a className="underline" href={chatUrl} target="_blank" rel="noreferrer">{chatUrl}</a>
+        </p>
+        <p className="sc-meta mt-2">
+          WhatsApp Cloud webhook: {waUrl} — set SKYKIN_WA_VERIFY, SKYKIN_WA_TOKEN, SKYKIN_WA_PHONE_ID on the host.
+        </p>
+      </section>
       <section className="sc-card">
         <h2 className="mb-3 text-[16px] font-bold">Add intent</h2>
         <div className="grid gap-2">
